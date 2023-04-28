@@ -1,0 +1,26 @@
+;; -*- mode: fennel; -*- vi:ft=fennel
+;; Configuration file for Fenneldoc v0.1.9
+;; https://gitlab.com/andreyorst/fenneldoc
+
+{:fennel-path {}
+ :function-signatures true
+ :ignored-args-patterns ["%.%.%." "%_"]
+ :inline-references "link"
+ :insert-comment true
+ :insert-copyright true
+ :insert-license true
+ :insert-version true
+ :mode "checkdoc"
+ :order "alphabetic"
+ :out-dir "./doc"
+ :project-copyright "Copyright (C) 2021-2022 Andrey Listopadov"
+ :modules-info {:async.fnl {:name "tiny-async"
+                            :description "A library for asynchronous programming for the Fennel language and Lua
+runtime.
+
+This library provides facilities for asynchronous programming by
+implementing a channel abstraction."}}
+ :project-license "[MIT](https://gitlab.com/andreyorst/tiny-async/-/raw/master/LICENSE)"
+ :project-version "v0.0.1"
+ :sandbox false
+ :toc true}
