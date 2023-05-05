@@ -1,28 +1,16 @@
 (comment
- "MIT License
+ "Copyright (c) 2023 Andrey Listopadov and contributors. All rights reserved.
+The use and distribution terms for this software are covered by the
+Eclipse Public License 1.0 (http://opensource.org/licenses/eclipse-1.0.php)
+which can be found in the file epl-v10.html at the root of this distribution.
+By using this software in any fashion, you are agreeing to be bound by
+the terms of this license.
+You must not remove this notice, or any other, from this software.")
 
-Copyright (c) 2023 Andrey Listopadov
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the “Software”), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.")
+;;; Helpers
 
 (local -lib-name
-  (or ... "tiny-async"))
+  (or ... "async"))
 
 (local {: gethook : sethook}
   (case _G.debug
@@ -39,6 +27,85 @@ SOFTWARE.")
     nil true
     (_ true) true
     _ false))
+
+(fn -register-hook [f]
+  "Run function `f` on each function return and every 1000 instructions.
+Appends the hook to existing one, if found, unless the hook is `f`."
+  (when (and gethook sethook)
+    (match (gethook)
+      f nil
+      nil (sethook f :r 1000)
+      (hook mask count)
+      (sethook
+       (fn [...] (hook ...) (f ...))
+       mask
+       count))))
+
+(macro defprotocol [name ...]
+  `(local ,name
+     ,(faccumulate [methods {} i 1 (select :# ...)]
+        (let [method (select i ...)]
+          (assert-compile (list? method) "expected method declaration")
+          (let [[name arglist body] method]
+            (assert-compile (sym? name) "expected named method" name)
+            (assert-compile (sequence? arglist) (.. "expected arglist for method " (tostring name)) arglist)
+            (assert-compile (= nil body) (.. "expected no body for method " (tostring name)) body)
+            (doto methods
+              (tset (tostring name) `#(<= $ ,(length arglist)))))))))
+
+(macro reify [...]
+  (let [index (gensym)
+        protocols []
+        actions '(do)]
+    (var current nil)
+    ((fn loop [x ...]
+       (assert-compile (or (sym? x) (list? x)) "expected symbol or fnspec" x)
+       (if (sym? x)
+           (do (set current x)
+               (table.insert protocols (tostring x)))
+           (list? x)
+           (let [[name & [arglist &as fnspec]] x]
+             (assert-compile (sym? name) "expected method name" name)
+             (assert-compile (sequence? arglist) "expected method arglist" arglist)
+             (table.insert
+              actions
+              `(case (. ,current ,(tostring name))
+                 f# (if (f# ,(length arglist))
+                        (tset ,index ,(tostring name) (fn ,(unpack fnspec)))
+                        (error ,(.. "arity mismatch for method " (tostring name))))
+                 ,(sym :_) (error ,(.. "Protocol " (tostring current) " doesn't define method " (tostring name)))))))
+       (when (not= 0 (select :# ...))
+         (loop ...)))
+     ...)
+    `(let [,index {}]
+       ,actions
+       (setmetatable
+        {}
+        {:__index ,index
+         :name "reify"
+         :__fennelview
+         #(.. "#<" (: (tostring $) :gsub "table:" "reify:")
+              ": " ,(table.concat protocols ", ") ">")}))))
+
+(fn -merge [t1 t2]
+  (let [res {}]
+    (collect [k v (pairs t1) :into res]
+      k v)
+    (collect [k v (pairs t2) :into res]
+      k v)))
+
+(fn -merge-with [f t1 t2]
+  (let [res (collect [k v (pairs t1)] k v)]
+    (collect [k v (pairs t2) :into res]
+      (case (. res k)
+	e (values k (f e v))
+	nil (values k v)))))
+
+(fn -make-callback [f active-f]
+  (->> {:__call (fn [_ ...] (when (active-f) ((or f #nil) ...)))}
+       (setmetatable {:active? active-f})))
+
+(local -nop (-make-callback #nil #true))
 
 ;;; Buffers
 
@@ -112,24 +179,18 @@ SOFTWARE.")
     #(.. "#<" (: (tostring $) :gsub "table:" "buffer:") ">")}))
 
 (fn buffer [size]
-  "Create a buffer of set `size`.
-
-When the buffer is full, returns `false'.  Taking from the buffer must
-return `nil', if the buffer is empty."
+  "Returns a fixed buffer of size n. When full, puts will block/park."
   (-buffer size FixedBuffer))
 
 (fn dropping-buffer [size]
-  "Create a dropping buffer of set `size`.
-
-When the buffer is full puts will succeed, but the value will be
-dropped."
+  "Returns a buffer of size n. When full, puts will complete but
+val will be dropped (no transfer)."
   (-buffer size DroppingBuffer))
 
 (fn sliding-buffer [size]
-  "Create a sliding buffer of set `size`.
-
-When the buffer is full puts will succeed, but the oldest value in the
-buffer will be dropped."
+  "Returns a buffer of size n. When full, puts will complete, and be
+buffered, but oldest elements in buffer will be dropped (not
+transferred)."
   (-buffer size SlidingBuffer))
 
 (fn promise-buffer []
@@ -145,7 +206,8 @@ a value from the buffer doesn't remove it from the buffer."
     _ false))
 
 (fn unblocking-buffer? [obj]
-  "Return true if `obj` is a buffer that never blocks on puts."
+  "Returns true if a channel created with buff will never block. That is
+to say, puts into this buffer will never cause the buffer to be full."
   (match (and (-buffer? obj)
               (. (getmetatable obj) :__index))
     SlidingBuffer true
@@ -175,21 +237,6 @@ to current time."
       (each [_ t (ipairs to-remove)]
         (tset -timeouts t nil)))))
 
-(fn -register-hook [f]
-  "Run function `f` on each function return and every 1000 instructions.
-Appends the hook to existing one, if found, unless the hook is `f`."
-  (when (and gethook sethook)
-    (match (gethook)
-      f nil
-      nil (sethook f :r 1000)
-      (hook mask count)
-      (sethook
-       (fn [...] (hook ...) (f ...))
-       mask
-       count))))
-
-;; (-register-hook -advance-timeouts)
-
 (fn -make-thunk [thunk active-fn name]
   (->> {:__name name
         :__fennelview
@@ -197,13 +244,14 @@ Appends the hook to existing one, if found, unless the hook is `f`."
        (setmetatable {:thunk thunk :active? active-fn})))
 
 (fn -try-buffer [chan val callback]
-  (case chan.buf
-    (where buf (not (buf:full?)))
-    (do (case chan.xform
-          xform (xform buf val)
-          nil (buf:put val))
-        (when callback (callback true))
-        true)))
+  (when (or (not callback) (callback.active?))
+    (case chan.buf
+      (where buf (not (buf:full?)))
+      (do (case chan.xform
+            xform (xform buf val)
+            nil (buf:put val))
+          (when callback (callback true))
+          true))))
 
 (local Channel
   {:type -chan
@@ -216,12 +264,12 @@ Appends the hook to existing one, if found, unless the hook is `f`."
                    (case chan
                      (where {: takes} (next takes))
                      (let [take (table.remove takes 1)]
-                       (if (take.active?)
-                           (do (case (coroutine.resume
+                       (if (and (callback.active?) (take.active?))
+                           (do (callback true)
+                               (case (coroutine.resume
                                       take.thunk
                                       (if buffered? (chan.buf:take) val))
-                                 (false msg) (chan.err-handler msg))
-                               (callback true)
+                                 (false msg) (chan:err-handler msg))
                                true)
                            (loop)))
                      (where {: puts} (< (length puts) 1024))
@@ -243,28 +291,30 @@ Appends the hook to existing one, if found, unless the hook is `f`."
    :take (fn loop [chan callback enqueue?]
            (assert (not= nil callback) "expected a callback")
            (let [res (case chan
-                       (where {: buf : puts} (not (buf:empty?)))
-                       (let [val (buf:take)
-                             len (buf:length)]
-                         ((fn loop []
-                            (case (table.remove puts 1)
-                              put (let [[put val*] put]
-                                    (if (put.active?)
-                                        (let [_ (-try-buffer chan val*)
-                                              len* (buf:length)]
+                       (where {: buf} (not (buf:empty?)))
+                       (when (callback.active?)
+                         (let [val (buf:take)
+                               len (buf:length)
+                               puts chan.puts]
+                           (callback val)
+                           ((fn loop []
+                              (case (table.remove puts 1)
+                                put (let [[put val*] put]
+                                      (if (put.active?)
+                                          (let [_ (-try-buffer chan val*)
+                                                len* (buf:length)]
                                             (case (coroutine.resume put.thunk)
-                                              (false msg) (chan.err-handler msg))
+                                              (false msg) (chan:err-handler msg))
                                             (when (= len len*)
                                               (loop)))
-                                        (loop))))))
-                         (callback val)
-                         val)
+                                          (loop))))))
+                           val))
                        (where {: puts} (next puts))
                        (let [[put val] (table.remove puts 1)]
-                         (if (put.active?)
+                         (if (and (callback.active?) (put.active?))
                              (do (callback val)
                                  (case (coroutine.resume put.thunk)
-                                   (false msg) (chan.err-handler msg))
+                                   (false msg) (chan:err-handler msg))
                                  val)
                              (loop chan callback enqueue?)))
                        (where {: takes} (< (length takes) 1024))
@@ -292,14 +342,20 @@ Appends the hook to existing one, if found, unless the hook is `f`."
                 (let [take (table.remove chan.takes 1)]
                   (when (take.active?)
                     (case (coroutine.resume take.thunk)
-                      (false msg) (chan.err-handler msg)))))))})
+                      (false msg) (chan:err-handler msg)))))))})
 
 (fn -err-handler [mesg]
   (io.stderr:write (tostring mesg) "\n")
   nil)
 
 (fn chan [?buffer-or-size ?xform ?err-handler]
-  "Create a chanel with optional buffer."
+  "Creates a channel with an optional buffer, an optional
+transducer, and an optional error handler.  If buffer-or-size is a
+number, will create and use a fixed buffer of that size. If a
+transducer is supplied a buffer must be specified. err-handler must be
+a fn of one argument - if an exception occurs during transformation it
+will be called with the thrown value as an argument, and any non-nil
+return value will be placed in the channel."
   (let [buffer (match ?buffer-or-size
                  {:type -buf} ?buffer-or-size
                  0 nil
@@ -309,13 +365,16 @@ Appends the hook to existing one, if found, unless the hook is `f`."
                 (?xform (fn [...]
                           (case (values (select :# ...) ...)
                             (1 buffer) buffer
-                            (2 buffer val) (: buffer :put val)))))]
+                            (2 buffer val) (: buffer :put val)))))
+        err-handler (or ?err-handler -err-handler)]
     (setmetatable
      {:puts []
       :takes []
       :buf buffer
       :xform xform
-      :err-handler (or ?err-handler -err-handler)}
+      :err-handler (fn [ch err]
+                     (case (err-handler err)
+                       res (ch:put ch res -nop)))}
      {:__index Channel
       :__name "channel"
       :__fennelview
@@ -333,10 +392,6 @@ Appends the hook to existing one, if found, unless the hook is `f`."
         (let [c (chan)]
           (tset -timeouts t c)
           c))))
-
-(fn -make-callback [f active-f]
-  (->> {:__call (fn [self ...] (when (active-f) ((or f #nil) ...)))}
-       (setmetatable {:active? active-f})))
 
 (fn take! [channel callback]
   "Take value off the `channel`.
@@ -399,14 +454,14 @@ Returns a channel, that eventually contains result of the execution."
         (case (. channels id)
           [c ?v] (c:put ?v
                         (-make-callback
-                         #(let [res [$ c]]
+                         #(let [res {1 $ 2 c}]
                             (set state.active? false)
                             (put! res-ch res)
                             (close! res-ch))
                          #state.active?)
                         true)
           c (c:take (-make-callback
-                     #(let [res [$ c]]
+                     #(let [res {1 $ 2 c}]
                         (set state.active? false)
                         (put! res-ch res)
                         (close! res-ch))
@@ -415,7 +470,7 @@ Returns a channel, that eventually contains result of the execution."
     (if (and state.active?
              opts opts.default)
         (do (set state.active? false)
-            [:default opts.default])
+            [opts.default :default])
         (take! res-ch))))
 
 (fn offer! [channel value]
@@ -494,11 +549,17 @@ Returns a channel, that eventually contains result of the execution."
                           (put! finishes :done))
                         (loop))))))))
 
-(fn pipeline-async [n to af from close?]
-  (-pipeline n to af from close? nil :async))
+(fn pipeline-async [n to af from ...]
+  {:fnl/docstring nil
+   :fnl/arglist [n to af from close?]}
+  (let [close? (if (= (select :# ...) 0) true ...)]
+    (-pipeline n to af from close? nil :async)))
 
-(fn pipeline [n to xf from close? ex-handler]
-  (-pipeline n to xf from close? ex-handler :compute))
+(fn pipeline [n to xf from ...]
+  {:fnl/docstring nil
+   :fnl/arglist [n to af from close? err-handler]}
+  (let [(err-handler close?) (if (= (select :# ...) 0) true ...)]
+    (-pipeline n to xf from close? err-handler :compute)))
 
 (fn reduce [f init ch]
   (go #((fn loop [ret]
@@ -543,22 +604,66 @@ will close after the items are copied."
     (onto-chan! ch t)
     ch))
 
-;;; Mux/Mix/Tap
+;;; Mult, Mix, Pub
 
-(local Mux {:muxch* (fn [_])})
+(defprotocol Mux
+  (muxch [_]))
 
-(local Mult
-  {:tap (fn [m ch close?])
-   :untap (fn [m ch] nil)
-   :untap-all (fn [m])})
+(defprotocol Mult
+  (tap [_ ch close?])
+  (untap [_ ch])
+  (untap-all [_]))
 
-(fn mult [ch])
+(fn mult [ch]
+  "Creates and returns a mult(iple) of the supplied channel. Channels
+containing copies of the channel can be created with 'tap', and
+detached with 'untap'.
 
-(fn tap [mult ch close?]
-  "Copies the mult source onto the supplied channel.
-  By default the channel will be closed when the source closes,
-  but can be determined by the close? parameter."
-  (mult:tap ch close?) ch)
+Each item is distributed to all taps in parallel and synchronously,
+i.e. each tap must accept before the next item is distributed. Use
+buffering/windowing to prevent slow taps from holding up the mult.
+
+Items received when there are no taps get dropped.
+
+If a tap puts to a closed channel, it will be removed from the mult."
+  (var dctr nil)
+  (let [atom {:cs {}}
+        m (reify
+           Mux
+           (muxch [_] ch)
+
+           Mult
+           (tap [_ ch close?] (tset atom :cs ch close?) nil)
+           (untap [_ ch] (tset atom :cs ch nil) nil)
+           (untap-all [_] (tset atom :cs {}) nil))
+        dchan (chan 1)
+        done (fn [_]
+               (set dctr (- dctr 1))
+               (when (= 0 dctr)
+                 (put! dchan true)))]
+    (go (fn loop []
+          (let [val (take! ch)]
+            (if (= nil val)
+                (each [c close? (pairs atom.cs)]
+                  (when close? (close! c)))
+                (let [chs (icollect [k (pairs atom.cs)] k)]
+                  (set dctr (length chs))
+                  (each [_ c (ipairs chs)]
+                    (when (not (put! c val done))
+                      (m:untap* c)))
+                  ;;wait for all
+                  (when (next chs)
+                    (take! dchan))
+                  (loop))))))
+    m))
+
+(fn tap [mult ch ...]
+  {:fnl/docstring "Copies the mult source onto the supplied channel.
+By default the channel will be closed when the source closes,
+but can be determined by the close? parameter."
+   :fnl/arglist [mult ch close?]}
+  (let [close? (if (= (select :# ...) 0) true ...)]
+    (mult:tap ch close?) ch))
 
 (fn untap [mult ch]
   "Disconnects a target channel from a mult"
@@ -568,14 +673,12 @@ will close after the items are copied."
   "Disconnects all target channels from a mult"
   (mult:untap-all))
 
-(local Mix
-  {:admix (fn [m ch])
-   :unmix (fn [m ch])
-   :unmix-all (fn [m])
-   :toggle (fn [m state-map])
-   :solo-mode (fn [m mode])})
-
-(fn ioc-alts! [state cont-block ports & {:as opts}])
+(defprotocol Mix
+  (admix [_ ch])
+  (unmix [_ ch])
+  (unmix-all [_])
+  (toggle [_ state-map])
+  (solo-mode [_ mode]))
 
 (fn mix [out]
   "Creates and returns a mix of one or more input channels which will
@@ -593,7 +696,58 @@ Each channel can have zero or more boolean modes set via 'toggle':
 :mute - muted channels will have their contents consumed but not
         included in the mix
 :pause - paused channels will not have their contents consumed (and
-         thus also not included in the mix)")
+         thus also not included in the mix)"
+  (let [atom {:cs {}
+              :solo-mode :mute} ;;ch->attrs-map
+        solo-modes {:mute true :pause true}
+        change (chan (sliding-buffer 1))
+        changed #(put! change true)
+        pick (fn [attr chs]
+               (collect [c v (pairs chs)]
+                 (when (. attr v)
+                   (values c true))))
+        calc-state (fn []
+                     (let [chs atom.cs
+                           mode atom.solo-mode
+                           solos (pick :solo chs)
+                           pauses (pick :pause chs)]
+                       {:solos solos
+                        :mutes (pick :mute chs)
+                        :reads (doto (if (and (= mode :pause) (next solos))
+                                         (icollect [k (pairs solos)] k)
+                                         (icollect [k (pairs chs)]
+                                           (when (not (. pauses k))
+                                             k)))
+                                 (table.insert change))}))
+        m (reify
+           Mux
+           (muxch [_] out)
+           Mix
+           (admix [_ ch] (tset atom :cs ch {}) (changed))
+           (unmix [_ ch] (tset atom :cs ch nil) (changed))
+           (unmix-all [_] (tset atom :cs {}) (changed))
+           (toggle [_ state-map]
+                   (tset atom :cs (-merge-with -merge atom.cs state-map))
+                   (changed))
+           (solo-mode [_ mode]
+                      (when (not (. solo-modes mode))
+                        (assert false (.. "mode must be one of: "
+                                          (table.concat (icollect [k (pairs solo-modes)] k) ", "))))
+                      (tset atom :solo-mode mode)
+                      (changed)))]
+    (go #((fn loop [{: solos : mutes : reads &as state}]
+            (let [[v c] (alts! reads)]
+              (if (or (= nil v) (= c change))
+                  (do (when (= nil v)
+                        (tset atom :cs c nil))
+                      (loop (calc-state)))
+                  (if (or (. solos c)
+                          (and (not (next solos)) (not (. mutes c))))
+                      (when (put! out v)
+                        (loop state))
+                      (loop state)))))
+          (calc-state)))
+    (doto m (tset :state atom) (tset :st calc-state))))
 
 (fn admix [mix ch]
   "Adds ch as an input to the mix"
@@ -621,18 +775,55 @@ Each channel can have zero or more boolean modes set via 'toggle':
   "Sets the solo mode of the mix. mode must be one of :mute or :pause"
   (mix:solo-mode mode))
 
-(local Pub
-  {:sub (fn [p v ch close?])
-   :unsub (fn [p v ch])
-   :unsub-all (fn [p v])})
+(defprotocol Pub
+  (sub [_ v ch close?])
+  (unsub [_ v ch])
+  (unsub-all [_ v]))
 
-(fn pub [ch topic-fn buf-fn])
+(fn pub [ch topic-fn ?buf-fn]
+  (let [buf-fn (or ?buf-fn #nil)
+        atom {:mults {}}
+        ensure-mult (fn [topic]
+                      (case (. atom :mults topic)
+                        m m
+                        nil (let [mults atom.mults
+                                  m (mult (chan (buf-fn topic)))]
+                              (doto mults (tset topic m))
+                              m)))
+        p (reify
+           Mux
+           (muxch [_] ch)
 
-(fn sub [p topic ch close?]
-  "Subscribes a channel to a topic of a pub.
-  By default the channel will be closed when the source closes,
-  but can be determined by the close? parameter."
-  (p:sub topic ch close?))
+           Pub
+           (sub [_ topic ch close?]
+                (let [m (ensure-mult topic)]
+                  (m:tap ch close?)))
+           (unsub [_ topic ch]
+                  (case (. atom :mults topic)
+                    m (m:untap ch)))
+           (unsub-all [_ topic]
+                      (if topic
+                          (tset atom :mults topic nil)
+                          (tset atom :mults {}))))]
+    (go #((fn loop []
+            (let [val (take! ch)]
+              (if (= nil val)
+                  (each [_ m (pairs atom.mults)]
+                    (close! (m:muxch)))
+                  (let [topic (topic-fn val)]
+                    (case (. atom :mults topic)
+                      m (when (not (put! (m:muxch) val))
+                          (tset atom :mults topic nil)))
+                    (loop)))))))
+    p))
+
+(fn sub [p topic ch ...]
+  {:fnl/docstring "Subscribes a channel to a topic of a pub.
+By default the channel will be closed when the source closes,
+but can be determined by the close? parameter."
+   :fnl/arglist [p topic ch close?]}
+  (let [close? (if (= (select :# ...) 0) true ...)]
+    (p:sub topic ch close?)))
 
 (fn unsub [p topic ch]
   "Unsubscribes a channel from a topic of a pub"
@@ -677,7 +868,7 @@ Each channel can have zero or more boolean modes set via 'toggle':
   (let [out (chan ?buf-or-n)]
     (go #((fn loop [cs]
             (if (> (length cs) 0)
-                (let [[v c &as r] (alts! cs)]
+                (let [[v c] (alts! cs)]
                   (if (= nil v)
                       (loop (icollect [_ c* (ipairs cs)]
                               (when (not= c* c) c*)))
@@ -713,62 +904,146 @@ Each channel can have zero or more boolean modes set via 'toggle':
        _ (close! b)]
    (take! (into [] (merge [a b])) pprint))
 
- (let [a (chan)]
+ (let [a (chan 2)]
    (go #(alts! [[a :a] [a :b] nil]))
    (take! a pprint)
-   (pprint a.puts)
    (take! a pprint)
-   (pprint a.puts))
+   )
 
- (local a (chan 1))
- (local b (chan 1))
- (put! a :c)
- (put! b :d)
- (go #(alts! [[a :a] [b :b] nil]))
- (put! a :e)
- (put! b :f)
- (pprint {:a a.puts :b b.puts})
- (take! a print)
- (take! b print)
+ (do
+   (local a (chan 10))
+   (local b (chan 10))
+   (put! a :a)
+   (put! b :b)
+   (go #(alts! [[a :c] [b :d] nil]))
+   (put! a :e)
+   (put! b :f)
+   (take! a (partial print :from-a))
+   (take! b (partial print :from-b))
+   (take! a (partial print :from-a))
+   (take! b (partial print :from-b))
+   (take! a (partial print :from-a))
+   (take! b (partial print :from-b))
+   )
+
+ (do
+   (local a (chan 10))
+   (local b (chan 10))
+   (put! a :a)
+   (put! b :b)
+   (go #(pprint (alts! [a b])))
+   )
 
  (let [c (chan)]
    (put! c 0)
-   (pipe c (to-chan! [1 2 3 4 5]))
+   (pipe (to-chan! [1 2 3 4 5]) c)
    (take! (into [] c) pprint))
 
- (fn delayed-inc [v c]
-   (go #(do (print :doing: v)
-            ;; (take! (timeout 1))
-            (put! c (+ v 1))
-            (close! c)
-            (print :done: v))))
- (local data (to-chan! [1 2 3 4 5 6 7 8 9 10])) (local results (chan))
- (pipeline-async 3 results delayed-inc data true)
- (take! (into [] results) pprint)
- (fn mapper [f]
-   (fn [rf]
-     (fn [...]
-       (case (select :# ...)
-         0 (rf)
-         1 (rf ...)
-         _ (rf ... (f (select 2 ...)))))))
- (let [c (chan 1 (mapper #(* $ $)))]
-   (pipe (to-chan! (fcollect [i 1 10] i)) c)
-   (take! (into [] c) pprint))
- (fn filterer [f]
-   (fn [rf]
-     (fn [...]
-       (case (select :# ...)
-         0 (rf)
-         1 (rf ...)
-         _ (let [(result val) ...]
-             (if (f val)
-                 (rf result val)
-                 result))))))
- (let [c (chan 1 (filterer #(= 0 (% $ 2))))]
-   (pipe (to-chan! (fcollect [i 1 10] i)) c)
-   (take! (into [] c) pprint))
+ (do
+   (fn delayed-inc [v c]
+     (go #(do (print :doing: v)
+              (take! (timeout 1))
+              (put! c (+ v 1))
+              (close! c)
+              (print :done: v))))
+   (local data (to-chan! [1 2 3 4 5 6 7 8 9 10]))
+   (local results (chan))
+   (pipeline-async 10 results delayed-inc data true)
+   (take! (into [] results) pprint)
+   (while (not results.closed))
+   )
+
+ (do
+   (fn mapper [f]
+     (fn [rf]
+       (fn [...]
+         (case (select :# ...)
+           0 (rf)
+           1 (rf ...)
+           _ (rf ... (f (select 2 ...)))))))
+   (let [c (chan 1 (mapper #(* $ $)))]
+     (pipe (to-chan! (fcollect [i 1 10] i)) c)
+     (take! (into [] c) pprint))
+   )
+
+ (do
+   (fn filterer [f]
+     (fn [rf]
+       (fn [...]
+         (case (select :# ...)
+           0 (rf)
+           1 (rf ...)
+           _ (let [(result val) ...]
+               (if (f val)
+                   (rf result val)
+                   result))))))
+   (let [c (chan 1 (filterer #(= 0 (% $ 2))))]
+     (pipe (to-chan! (fcollect [i 1 10] i)) c)
+     (take! (into [] c) pprint))
+   )
+
+ (do
+   (local c (chan))
+   (local m (mult c))
+   (local c1 (chan))
+   (tap m c1)
+   (local c2 (chan))
+   (tap m c2)
+   (local c3 (chan))
+   (tap m c3)
+   (put! c 42)
+   (take! c1 (partial print 1 :c1))
+   (take! c2 (partial print 1 :c2))
+   (take! c3 (partial print 1 :c3))
+   (untap m c1)
+   (put! c 27)
+   (take! c1 (partial print 2 :c1))
+   (take! c2 (partial print 2 :c2))
+   (take! c3 (partial print 2 :c3))
+   (untap-all m)
+   (put! c 72)
+   (take! c1 (partial print 3 :c1))
+   (take! c2 (partial print 3 :c2))
+   (take! c3 (partial print 3 :c3))
+   )
+
+ (do (local c (chan 3))
+     (go #(let [m (mix c)
+                c1 (chan)
+                c2 (chan)
+                c3 (chan)]
+            (admix m c1)
+            (admix m c2)
+            (admix m c3)
+            (put! c1 :a)
+            (put! c2 :b)
+            (put! c3 :c)
+            (unmix m c2)
+            (put! c1 :d)
+            (put! c2 :e)
+            (put! c3 :f)
+            (unmix-all m)
+            (put! c1 :g)
+            (put! c2 :h)
+            (put! c3 :i)))
+     (take! c pprint)
+     )
+
+ (do
+   (local c (chan))
+   (local sub-c (pub c #(. $ :route)))
+   (local cx (chan))
+   (sub sub-c :up-stream cx)
+   (local cy (chan))
+   (sub sub-c :down-stream cy)
+   (take! cx pprint)
+   (take! cy pprint)
+   (put! c {:route :up-stream :data 123})
+   (put! c {:route :down-stream :data 123})
+   )
  )
+
+(-register-hook -advance-timeouts)
 
 {: buffer
  : dropping-buffer
@@ -788,11 +1063,25 @@ Each channel can have zero or more boolean modes set via 'toggle':
  : pipe
  : pipeline-async
  : pipeline
- : onto-chan!
- : to-chan!
  : reduce
  : transduce
  : split
+ : onto-chan!
+ : to-chan!
+ : mult
+ : tap
+ : untap
+ : untap-all
+ : mix
+ : admix
+ : unmix
+ : unmix-all
+ : toggle
+ : solo-mode
+ : pub
+ : sub
+ : unsub
+ : unsub-all
  : map
  : merge
  : into
