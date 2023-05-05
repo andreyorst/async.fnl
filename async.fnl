@@ -107,6 +107,31 @@ Appends the hook to existing one, if found, unless the hook is `f`."
 
 (local -nop (-make-callback #nil #true))
 
+(local socket
+  (match (pcall require :socket)
+    (true socket) socket
+    _ nil))
+
+(local posix
+  (match (pcall require :posix)
+    (true posix) posix
+    _ nil))
+
+(local (-time -time-type)
+  (if (?. socket :gettime)
+      (values socket.gettime :socket)
+      (?. posix :clock_gettime)
+      (let [gettime posix.clock_gettime]
+        (values #(let [(s ns) (gettime)]
+                   (+ s (/ ns 1000000000)))
+                :posix))
+      (values os.time :lua)))
+
+(local -difftime
+  (case -time-type
+    (where (or :posix :socket)) #(- $1 $2)
+    :lua os.difftime))
+
 ;;; Buffers
 
 (local -buf {})
@@ -178,20 +203,20 @@ Appends the hook to existing one, if found, unless the hook is `f`."
     :__fennelview
     #(.. "#<" (: (tostring $) :gsub "table:" "buffer:") ">")}))
 
-(fn buffer [size]
+(fn buffer [n]
   "Returns a fixed buffer of size n. When full, puts will block/park."
-  (-buffer size FixedBuffer))
+  (-buffer n FixedBuffer))
 
-(fn dropping-buffer [size]
+(fn dropping-buffer [n]
   "Returns a buffer of size n. When full, puts will complete but
 val will be dropped (no transfer)."
-  (-buffer size DroppingBuffer))
+  (-buffer n DroppingBuffer))
 
-(fn sliding-buffer [size]
+(fn sliding-buffer [n]
   "Returns a buffer of size n. When full, puts will complete, and be
 buffered, but oldest elements in buffer will be dropped (not
 transferred)."
-  (-buffer size SlidingBuffer))
+  (-buffer n SlidingBuffer))
 
 (fn promise-buffer []
   "Create a promise buffer.
@@ -205,11 +230,11 @@ a value from the buffer doesn't remove it from the buffer."
     {:type -buf} true
     _ false))
 
-(fn unblocking-buffer? [obj]
+(fn unblocking-buffer? [buff]
   "Returns true if a channel created with buff will never block. That is
 to say, puts into this buffer will never cause the buffer to be full."
-  (match (and (-buffer? obj)
-              (. (getmetatable obj) :__index))
+  (match (and (-buffer? buff)
+              (. (getmetatable buff) :__index))
     SlidingBuffer true
     DroppingBuffer true
     PromiseBuffer true
@@ -219,9 +244,7 @@ to say, puts into this buffer will never cause the buffer to be full."
 
 (local -chan {})
 (local -timeouts {})
-(local -time os.time)
-(local -difftime
-  (or os.difftime #(- $1 $2)))
+
 
 (fn -chan? [obj]
   (match obj {:type -chan} true _ false))
@@ -231,7 +254,7 @@ to say, puts into this buffer will never cause the buffer to be full."
 to current time."
   (when (next -timeouts)
     (let [to-remove (icollect [t ch (pairs -timeouts)]
-                      (when (> 0 (-difftime t (-time)))
+                      (when (>= 0 (-difftime t (-time)))
                         (ch:close)
                         t))]
       (each [_ t (ipairs to-remove)]
@@ -348,7 +371,7 @@ to current time."
   (io.stderr:write (tostring mesg) "\n")
   nil)
 
-(fn chan [?buffer-or-size ?xform ?err-handler]
+(fn chan [buf-or-n xform err-handler]
   "Creates a channel with an optional buffer, an optional
 transducer, and an optional error handler.  If buffer-or-size is a
 number, will create and use a fixed buffer of that size. If a
@@ -356,17 +379,17 @@ transducer is supplied a buffer must be specified. err-handler must be
 a fn of one argument - if an exception occurs during transformation it
 will be called with the thrown value as an argument, and any non-nil
 return value will be placed in the channel."
-  (let [buffer (match ?buffer-or-size
-                 {:type -buf} ?buffer-or-size
+  (let [buffer (match buf-or-n
+                 {:type -buf} buf-or-n
                  0 nil
                  size (buffer size))
-        xform (when ?xform
+        xform (when xform
                 (assert (not= nil buffer) "buffer must be supplied when transducer is")
-                (?xform (fn [...]
-                          (case (values (select :# ...) ...)
-                            (1 buffer) buffer
-                            (2 buffer val) (: buffer :put val)))))
-        err-handler (or ?err-handler -err-handler)]
+                (xform (fn [...]
+                         (case (values (select :# ...) ...)
+                           (1 buffer) buffer
+                           (2 buffer val) (: buffer :put val)))))
+        err-handler (or err-handler -err-handler)]
     (setmetatable
      {:puts []
       :takes []
@@ -380,50 +403,93 @@ return value will be placed in the channel."
       :__fennelview
       #(.. "#<" (: (tostring $) :gsub "table:" "channel:") ">")})))
 
-(fn promise-chan [?xform ?err-handler]
-  (chan (promise-buffer) ?xform ?err-handler))
+(fn promise-chan [xform err-handler]
+  "Creates a promise channel with an optional transducer, and an optional
+exception-handler.  A promise channel can take exactly one value that
+consumers will receive.  Once full, puts complete but val is
+dropped (no transfer).  Consumers will block until either a value is
+placed in the channel or the channel is closed. See chan for the
+semantics of xform and err-handler."
+  (chan (promise-buffer) xform err-handler))
 
-(fn timeout [seconds]
-  "Create a channel that will be closed after specified amount of
-`seconds`.  Note, this requires `debug.sethook` to be available."
+(var warned false)
+
+(fn take! [port fn1 ...]
+  {:fnl/docstring "Asynchronously takes a val from port, passing to fn1. Will pass nil
+if closed. If on-caller? (default true) is true, and value is
+immediately available, will call fn1 on calling thread.  Returns nil."
+   :fnl/arglist [port fn1 on-caller?]}
+  (assert (-chan? port) "expected a port as first argument")
+  (assert (not (and (-main-thread?) (= nil fn1)))
+          "expected a callback")
+  (let [on-caller? (if (= (select :# ...) 0) true ...)]
+    (port:take
+     (-make-callback fn1 #true)
+     (and fn1 on-caller?))))
+
+(fn timeout [msecs]
+  "Returns a channel that will close after msecs.
+
+Note, this requires `debug.sethook` to be present.  By default, Lua
+doesn't support sub-second time measurements.  Unless luasocket or
+luaposix is available all millisecond values are rounded to the next
+whole second value."
   (assert (and gethook sethook) "Can't advance timers - debug.sethook unavailable")
-  (let [t (+ (-time) (- seconds 1))]
+  (let [dt (case -time-type
+             :lua (let [s (/ msecs 1000)
+                        s* (math.ceil s)]
+                    (when (and (not (= s* s)) (not warned))
+                      (set warned true)
+                      (take! (timeout 10000) #(set warned false))
+                      (io.stderr:write
+                       (.. "WARNING Lua doesn't support sub-second time precision. "
+                           "Timeout rounded to the next nearest whole second. "
+                           "Install luasocket or luaposix to get sub-second precision.\n")))
+                    s*)
+             _ (/ msecs 1000))
+        t (+ (-time) dt)]
     (or (. -timeouts t)
         (let [c (chan)]
           (tset -timeouts t c)
           c))))
 
-(fn take! [channel callback]
-  "Take value off the `channel`.
-If the channel has a value in a buffer or a pending put, returns
-immediatelly.  When called inside the `thread`, parks registers a
-pending take on the channel and parks the thread.  If the channel is
-closed returns nil.  When called in the main thread assigns a
-`callback` as pending take."
-  (assert (-chan? channel) "expected a channel as first argument")
-  (assert (not (and (-main-thread?) (= nil callback)))
-          "expected a callback")
-  (channel:take
-   (-make-callback callback #true)
-   (and callback true)))
+(fn <! [port]
+  "takes a val from port. Must be called inside a (go ...) block.  Will
+return nil if closed.  Will park if nothing is available.  Returns
+true unless port is already closed"
+  (assert (not (-main-thread?)) "<! used not in (go ...) block")
+  (take! port))
 
-(fn put! [channel value callback]
-  "Put the `value` onto a `channel`.
-If the channel has a buffer, puts the value immediatelly, and returns
-`true`.  When called inside the `thread`, if the buffer is full or of
-size `0` registers a pending put, and parks the thread.  If there's a
-pending take, passes a value to the take thread and continues.
-Otherwise returns `nil`."
-  (assert (-chan? channel) "expected a channel as first argument")
-  (channel:put value (-make-callback callback #true)))
+(fn put! [port val fn1 ...]
+  {:fnl/docstring "Asynchronously puts a val into port, calling fn1 (if supplied) when
+complete.  nil values are not allowed.  Will throw if closed. If
+on-caller? (default true) is true, and the put is immediately
+accepted, will call fn1 on calling thread.  Returns nil."
+   :fnl/arglist [port val fn1 on-caller?]}
+  (assert (-chan? port) "expected a channel as first argument")
+  (let [on-caller? (if (= (select :# ...) 0) true ...)]
+    (port:put val (-make-callback fn1 #true) (not on-caller?))))
+
+(fn >! [port]
+  "Puts a val into port.  nil values are not allowed.  Must be called
+inside a (go ...) block.  Will park if no buffer space is available.
+Returns true unless port is already closed."
+  (assert (not (-main-thread?)) ">! used not in (go ...) block")
+  (put! port))
 
 (fn close! [chan]
+  "Close `port`."
   (assert (-chan? chan) "expected a channel")
   (chan:close))
 
 (fn go [thunk]
-  "Run `thunk` asynchronously.
-Returns a channel, that eventually contains result of the execution."
+  "Asynchronously executes the thunk, returning immediately to the
+calling thread. Additionally, any visible calls to <!, >! and
+alt!/alts!  channel operations within the body will block (if
+necessary) by 'parking' the calling thread rather than tying up the
+only Lua thread.  Upon completion of the operation, the thunk will be
+resumed.  Returns a channel which will receive the result of the thunk
+when completed"
   (let [c (chan 1)]
     (case (-> (fn []
                 (case (thunk)
@@ -444,6 +510,27 @@ Returns a channel, that eventually contains result of the execution."
     ids))
 
 (fn alts! [channels opts]
+  "Completes at most one of several channel operations. Must be called
+inside a (go ...) block. ports is a vector of channel endpoints,
+which can be either a channel to take from or a vector of
+[channel-to-put-to val-to-put], in any combination. Takes will be
+made as if by <!, and puts will be made as if by >!. Unless
+the :priority option is true, if more than one port operation is
+ready a non-deterministic choice will be made. If no operation is
+ready and a :default value is supplied, [default-val :default] will
+be returned, otherwise alts! will park until the first operation to
+become ready completes. Returns [val port] of the completed
+operation, where val is the value taken for takes, and a
+boolean (true unless already closed, as per put!) for puts.
+
+`opts` are passed as :key val ... Supported options:
+
+:default val - the value to use if none of the operations are immediately ready
+:priority true - (default nil) when true, the operations will be tried in order.
+
+Note: there is no guarantee that the port exps or val exprs will be
+used, nor in what order should they be, so they should not be
+depended upon for side effects."
   (assert (not (-main-thread?)) "called alts! on the main thread")
   (let [n (length channels)
         ids (-random-array n)
@@ -474,10 +561,15 @@ Returns a channel, that eventually contains result of the execution."
         (take! res-ch))))
 
 (fn offer! [channel value]
+  "Puts a val into port if it's possible to do so immediately.
+nil values are not allowed. Never blocks. Returns true if offer
+succeeds."
   (assert (-chan? channel) "expected a channel as first argument")
   (channel:put value (-make-callback #nil #false)))
 
 (fn poll! [channel]
+  "Takes a val from port if it's possible to do so immediately.
+Never blocks. Returns value if successful, nil otherwise."
   (assert (-chan? channel) "expected a channel")
   (channel:take
    (-make-callback #nil #false)
@@ -486,8 +578,10 @@ Returns a channel, that eventually contains result of the execution."
 ;;; Operations
 
 (fn pipe [from to ...]
-  {:fnl/docstring "Pipe all values from `from` to `to`.  Once `from` is closed,
-`to` is also closed, unless `close?` is false."
+  {:fnl/docstring "Takes elements from the from channel and supplies them to the to
+channel.  By default, the to channel will be closed when the from
+channel closes, but can be determined by the close? parameter.  Will
+stop consuming the from channel if the to channel closes."
    :fnl/arglist [from to close?]}
   (let [close? (if (= (select :# ...) 0) true ...)]
     (go (fn loop []
@@ -550,30 +644,44 @@ Returns a channel, that eventually contains result of the execution."
                         (loop))))))))
 
 (fn pipeline-async [n to af from ...]
-  {:fnl/docstring nil
+  {:fnl/docstring "Takes elements from the from channel and supplies them to the to
+channel, subject to the async function af, with parallelism n. af must
+be a function of two arguments, the first an input value and the
+second a channel on which to place the result(s). The presumption is
+that af will return immediately, having launched some asynchronous
+operation whose completion/callback will put results on the channel,
+then close! it. Outputs will be returned in order relative to the
+inputs. By default, the to channel will be closed when the from
+channel closes, but can be determined by the close?  parameter. Will
+stop consuming the from channel if the to channel closes. See also
+pipeline, pipeline-blocking."
    :fnl/arglist [n to af from close?]}
   (let [close? (if (= (select :# ...) 0) true ...)]
     (-pipeline n to af from close? nil :async)))
 
 (fn pipeline [n to xf from ...]
-  {:fnl/docstring nil
+  {:fnl/docstring "Takes elements from the from channel and supplies them to the to
+channel, subject to the transducer xf, with parallelism n. Because it
+is parallel, the transducer will be applied independently to each
+element, not across elements, and may produce zero or more outputs per
+input.  Outputs will be returned in order relative to the inputs. By
+default, the to channel will be closed when the from channel closes,
+but can be determined by the close?  parameter. Will stop consuming
+the from channel if the to channel closes.  Note this is supplied for
+API compatibility with the Clojure version.  Values of N > 1 will not
+result in actual concurrency in a single-threaded runtime."
    :fnl/arglist [n to af from close? err-handler]}
   (let [(err-handler close?) (if (= (select :# ...) 0) true ...)]
     (-pipeline n to xf from close? err-handler :compute)))
 
-(fn reduce [f init ch]
-  (go #((fn loop [ret]
-          (let [v (take! ch)]
-            (if (= nil v) ret
-                (loop (f ret v)))))
-        init)))
-
-(fn transduce [xform f init ch]
-  (let [f (xform f)]
-    (go #(let [ret (take! (reduce f init ch))]
-           (f ret)))))
-
 (fn split [p ch ?t-buf-or-n ?f-buf-or-n]
+  "Takes a predicate and a source channel and returns a vector of two
+channels, the first of which will contain the values for which the
+predicate returned true, the second those for which it returned
+false.
+The out channels will be unbuffered by default, or two buf-or-ns can
+be supplied. The channels will close after the source channel has
+closed."
   (let [tc (chan ?t-buf-or-n)
         fc (chan ?f-buf-or-n)]
     (go (fn loop []
@@ -584,11 +692,31 @@ Returns a channel, that eventually contains result of the execution."
                   (loop))))))
     [tc fc]))
 
+(fn reduce [f init ch]
+  "f should be a function of 2 arguments. Returns a channel containing
+the single result of applying f to init and the first item from the
+channel, then applying f to that result and the 2nd item, etc. If
+the channel closes without yielding items, returns init and f is not
+called. ch must close before reduce produces a result."
+  (go #((fn loop [ret]
+          (let [v (take! ch)]
+            (if (= nil v) ret
+                (loop (f ret v)))))
+        init)))
+
+(fn transduce [xform f init ch]
+  "async/reduces a channel with a transformation (xform f).
+Returns a channel containing the result.  ch must close before
+transduce produces a result."
+  (let [f (xform f)]
+    (go #(let [ret (take! (reduce f init ch))]
+           (f ret)))))
+
 (fn onto-chan! [chan t ...]
   {:fnl/docstring "Puts the contents of coll into the supplied channel.
-By default the channel will be closed after the items are copied, but
-can be determined by the close? parameter.  Returns a channel which
-will close after the items are copied."
+By default the channel will be closed after the items are copied,
+but can be determined by the close? parameter.
+Returns a channel which will close after the items are copied."
    :fnl/arglist [chan t close?]}
   (let [close? (if (= (select :# ...) 0) true ...)]
     (go #(do (each [_ v (ipairs t)]
@@ -600,6 +728,8 @@ will close after the items are copied."
   (math.min bound (length t)))
 
 (fn to-chan! [t]
+  "Creates and returns a channel which contains the contents of coll,
+closing when exhausted."
   (let [ch (chan (-bounded-length 100 t))]
     (onto-chan! ch t)
     ch))
@@ -763,12 +893,13 @@ Each channel can have zero or more boolean modes set via 'toggle':
 
 (fn toggle [mix state-map]
   "Atomically sets the state(s) of one or more channels in a mix. The
-  state map is a map of channels -> channel-state-map. A
-  channel-state-map is a map of attrs -> boolean, where attr is one or
-  more of :mute, :pause or :solo. Any states supplied are merged with
-  the current state.
-  Note that channels can be added to a mix via toggle, which can be
-  used to add channels in a particular (e.g. paused) state."
+state map is a map of channels -> channel-state-map. A
+channel-state-map is a map of attrs -> boolean, where attr is one or
+more of :mute, :pause or :solo. Any states supplied are merged with
+the current state.
+
+Note that channels can be added to a mix via toggle, which can be
+used to add channels in a particular (e.g. paused) state."
   (mix:toggle state-map))
 
 (fn solo-mode [mix mode]
@@ -781,6 +912,23 @@ Each channel can have zero or more boolean modes set via 'toggle':
   (unsub-all [_ v]))
 
 (fn pub [ch topic-fn ?buf-fn]
+  "Creates and returns a pub(lication) of the supplied channel,
+partitioned into topics by the topic-fn. topic-fn will be applied to
+each value on the channel and the result will determine the 'topic'
+on which that value will be put. Channels can be subscribed to
+receive copies of topics using 'sub', and unsubscribed using
+'unsub'. Each topic will be handled by an internal mult on a
+dedicated channel. By default these internal channels are
+unbuffered, but a buf-fn can be supplied which, given a topic,
+creates a buffer with desired properties.
+Each item is distributed to all subs in parallel and synchronously,
+i.e. each sub must accept before the next item is distributed. Use
+buffering/windowing to prevent slow subs from holding up the pub.
+Items received when there are no matching subs get dropped.
+Note that if buf-fns are used then each topic is handled
+asynchronously, i.e. if a channel is subscribed to more than one
+topic it should not expect them to be interleaved identically with
+the source."
   (let [buf-fn (or ?buf-fn #nil)
         atom {:mults {}}
         ensure-mult (fn [topic]
@@ -836,6 +984,13 @@ but can be determined by the close? parameter."
 ;;;
 
 (fn map [f chs ?buf-or-n]
+  "Takes a function and a collection of source channels, and returns a
+channel which contains the values produced by applying f to the set
+of first items taken from each source channel, followed by applying
+f to the set of second items from each channel, until any one of the
+channels is closed, at which point the output channel will be
+closed. The returned channel will be unbuffered by default, or a
+buf-or-n can be supplied"
   (var dctr nil)
   (let [out (chan ?buf-or-n)
         cnt (length chs)
@@ -865,6 +1020,10 @@ but can be determined by the close? parameter."
     out))
 
 (fn merge [chs ?buf-or-n]
+  "Takes a collection of source channels and returns a channel which
+contains all values taken from them. The returned channel will be
+unbuffered by default, or a buf-or-n can be supplied. The channel
+will close after all the source channels have closed."
   (let [out (chan ?buf-or-n)]
     (go #((fn loop [cs]
             (if (> (length cs) 0)
@@ -879,9 +1038,16 @@ but can be determined by the close? parameter."
     out))
 
 (fn into [t ch]
+  "Returns a channel containing the single (collection) result of the
+items taken from the channel conjoined to the supplied
+collection. ch must close before into produces a result."
   (reduce #(doto $1 (tset (+ 1 (length $1)) $2)) t ch))
 
 (fn take [n ch ?buf-or-n]
+  "Returns a channel that will return, at most, n items from ch. After n
+items have been returned, or ch has been closed, the return chanel
+will close.  The output channel is unbuffered by default, unless
+buf-or-n is given."
   (let [out (chan ?buf-or-n)]
     (go #(do (var done false)
              (for [i 0 (- n 1) :until done]
@@ -939,19 +1105,26 @@ but can be determined by the close? parameter."
    (pipe (to-chan! [1 2 3 4 5]) c)
    (take! (into [] c) pprint))
 
- (do
-   (fn delayed-inc [v c]
-     (go #(do (print :doing: v)
-              (take! (timeout 1))
-              (put! c (+ v 1))
-              (close! c)
-              (print :done: v))))
-   (local data (to-chan! [1 2 3 4 5 6 7 8 9 10]))
-   (local results (chan))
-   (pipeline-async 10 results delayed-inc data true)
-   (take! (into [] results) pprint)
-   (while (not results.closed))
-   )
+ (macro time [body]
+   `(let [s# (-time)
+          pack# #(doto [$...] (tset :n (select :# $...)))
+          res# (pack# ,body)]
+      (print "Elapsed: " (* 1000 (- (-time) s#)) " ms")
+      ((or _G.unpack table.unpack) res# 1 res#.n)))
+
+ (time
+  (do
+    (fn delayed-inc [v c]
+      (go #(do (print :doing: v)
+               (take! (timeout 1700))
+               (put! c (+ v 1))
+               (close! c)
+               (print :done: v))))
+    (local data (to-chan! [1 2 3 4 5 6 7 8 9 10]))
+    (local results (chan))
+    (pipeline-async 10 results delayed-inc data true)
+    (take! (into [] results) pprint)
+    (while (not results.closed))))
 
  (do
    (fn mapper [f]
@@ -1052,9 +1225,11 @@ but can be determined by the close? parameter."
  : unblocking-buffer?
  : chan
  : promise-chan
- : timeout
  : take!
+ : <!
+ : timeout
  : put!
+ : >!
  : close!
  : go
  : alts!
