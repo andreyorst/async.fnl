@@ -1,132 +1,33 @@
-# Tiny Async
+# `async.fnl`
 
-Pure Fennel asynchronous library, implementing channel-based communication without a scheduler.
-The library is extremely limited, and largely callback based.
-For a more featureful version see [fennel-async](https://gitlab.com/andreyorst/fennel-async).
+A Fennel re-implementation of ClojureScript version of the [core.async](https://github.com/clojure/core.async) library.
 
-## Installation
+## Releases and installation
 
-Copy [tiny-async.fnl](https://gitlab.com/andreyorst/tiny-async/-/raw/main/tiny-async.fnl) into your project.
+This project follows the same version scheme the Clojure library, using MAJOR.MINOR.COMMITS starting from 1.6.
+MAJOR and MINOR provide some relative indication of the size of the change, but do not follow semantic versioning.
+In general, all changes endeavor to be non-breaking (by moving to new names rather than by breaking existing names).
+COMMITS is an ever-increasing counter of commits since the beginning of this repository.
 
-## Usage
+Copy [async.fnl](https://gitlab.com/andreyorst/async.fnl/-/raw/main/async.fnl) somewhere into your project.
 
-Require the library:
+## Differences from `core.async`
 
-```fennel
-(local {: chan : go : take! : put! : close!}
-  (require :tiny-async))
-```
+The Lua runtime doesn't require using inversion of control and complex code transformations to have the ability to pause funtion execution at any given moment.
+Instead, Lua provides coroutines, that allow arbitrary control transfer to and from coroutines.
+Hence, the library is coroutine-based, and all asynchronous facilities are built upon pausing thunks when operation occurs on the channel that is not ready.
 
-Create a channel:
+The Lua runtime also doesn't provide any facilities for measuring time with precision higher than seconds by default.
+If the [luasocket](https://aiq0.github.io/luasocket/index.html) or [luaposix](https://luaposix.github.io/luaposix/) libraries are available, they're used for time-tracking of the `timeout` channels.
+Otherwise, Lua's [`os.time`](https://www.lua.org/manual/5.4/manual.html#pdf-os.time) is used, and the precision is limited to full seconds.
+The library also depends on [`debug.sethook`](https://www.lua.org/manual/5.4/manual.html#pdf-debug.sethook) for running timers, and will disable `timeout` channels if the `debug` library is not present.
 
-```fennel
-(local c (chan))
-```
-
-Queue a take:
-
-```fennel
-(take! c (partial print :data:))
-```
-
-Queue a put:
-
-```fennel
-(put! c :val) ; prints "data: val"
-```
-
-### Go threads
-
-A thread can be spawned with the `go` function:
-
-```fennel
-(go #(while true (print :data: (take! c))))
-```
-
-Now every `put!` to the channel `c` will print it's value.
-
-Threads are automatically parked when `take!` or `put!` can't immediately succeed.
-They are automatically resumed once the channel that parked the thread receives a value.
-
-### Buffered channels
-
-By default, `chan` creates an unbuffered channel.
-All puts and takes will not succeed immediately, instead the thread is parked and assigned as a callback to the channel.
-
-A channel can be given a buffer by providing a size argument to the `chan` function:
-
-```fennel
-(local bc (chan 3))
-```
-
-This channel can accept three puts without blocking the thread or queuing pending puts:
-
-```fennel
-(go #(do (put! bc 1) (print :done 1))) ; done 1
-(go #(do (put! bc 2) (print :done 2))) ; done 2
-(go #(do (put! bc 3) (print :done 3))) ; done 3
-(go #(do (put! bc 4) (print :done 4))) ; put is now pending - go thread is parked
-```
-
-Taking from a buffered channel realizes pending puts (if any):
-
-```fennel
-(take! bc (partial print :data:))
-;; prints: "done 4"
-;; prints: "data: 1"
-```
-
-#### Unblocking buffers
-
-A custom buffer can be provided to the channel to make it non-blocking.
-For example, sliding and dropping buffers never block, instead the values are dropped from the buffers from either side:
-
-```fennel
-(local {: sliding-buffer
-        : dropping-buffer
-        : promise-buffer}
-  (require :tiny-async))
-(local sc (chan (sliding-buffer 3)))
-(local dc (chan (dropping-buffer 3)))
-```
-
-Dropping buffer drops from the tail:
-
-```fennel
-(for [i 1 4] (put! dc i))
-(take! dc print) ; 1
-(take! dc print) ; 2
-(take! dc print) ; 3
-(take! dc print) ; nothing
-```
-
-Sliding buffer drops from the head:
-
-```fennel
-(for [i 1 4] (put! sc i))
-(take! sc print) ; 2
-(take! sc print) ; 3
-(take! sc print) ; 4
-(take! sc print) ; nothing
-```
-
-Promise buffer is a bit different, as it acts like a promise - it accepts only one value, dropping anything else, and it can't be emptied with a take:
-
-```fennel
-(local p (chan (promise-buffer)))
-(put! p :val)
-(take! p print) ; val
-(put! p :other)
-(take! p print) ; val
-```
-
-### Timeout channels
-
-A `timeout` channel is automatically closed once a certain amount of time passes.
+The library aims for providing full compatibility with ClojureScript version of the library.
+Please report bugs or inconsistencies to the project [issue tracker](https://gitlab.com/andreyorst/async.fnl/-/issues).
 
 ## Documentation
 
-The documentation is auto-generated with Fenneldoc and can be found here.
+The documentation is auto-generated with [Fenneldoc](https://gitlab.com/andreyorst/fenneldoc) and can be found [here](https://gitlab.com/andreyorst/async.fnl/-/blob/main/doc/async.md).
 
 ## Contributing
 

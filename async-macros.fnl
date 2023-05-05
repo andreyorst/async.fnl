@@ -89,13 +89,13 @@ destructuring specifically."}
 
 (fn go [...]
   {:fnl/arglist [& body]
-   :fnl/docstring "Asynchronously executes the body, returning immediately to the
-calling thread. Additionally, any visible calls to <!, >! and
-alt!/alts!  channel operations within the body will block (if
+   :fnl/docstring "Asynchronously executes the `body`, returning immediately to the
+calling thread. Additionally, any visible calls to `<!`, `>!` and
+`alts!`  channel operations within the `body` will block (if
 necessary) by 'parking' the calling thread rather than tying up the
-only Lua thread.  Upon completion of the operation, the body will be
-resumed.  Returns a channel which will receive the result of the body
-when completed"}
+only Lua thread.  Upon completion of the operation, the `body` will be
+resumed.  Returns a channel which will receive the result of the `body`
+when completed."}
   `(let [{:go go#} (require :async)]
      (go# #(do ,...))))
 

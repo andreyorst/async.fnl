@@ -2,6 +2,13 @@
 ;; Configuration file for Fenneldoc v0.1.9
 ;; https://gitlab.com/andreyorst/fenneldoc
 
+(fn rev-count []
+  (with-open [f (io.popen "git -C . rev-list HEAD --count")]
+    (f:read)))
+
+(local (MAJOR MINOR PATCH)
+  (values "1" "6" (rev-count)))
+
 {:fennel-path {}
  :function-signatures true
  :ignored-args-patterns ["%.%.%." "%_"]
@@ -13,14 +20,60 @@
  :mode "checkdoc"
  :order "alphabetic"
  :out-dir "./doc"
- :project-copyright "Copyright (C) 2021-2022 Andrey Listopadov"
- :modules-info {:async.fnl {:name "tiny-async"
-                            :description "A library for asynchronous programming for the Fennel language and Lua
-runtime.
-
-This library provides facilities for asynchronous programming by
-implementing a channel abstraction."}}
- :project-license "[MIT](https://gitlab.com/andreyorst/tiny-async/-/raw/master/LICENSE)"
- :project-version "v0.0.1"
+ :project-copyright "Copyright (c) 2023 Andrey Listopadov"
+ :modules-info
+ {:async.fnl
+  {:name "async.fnl"
+   :description "A Fennel library providing facilities for async programming and communication."
+   :doc-order
+   [:buffer
+    :dropping-buffer
+    :sliding-buffer
+    :promise-buffer
+    :unblocking-buffer?
+    :chan
+    :promise-chan
+    :timeout
+    :<!
+    :take!
+    :>!
+    :put!
+    :close!
+    :go
+    :alts!
+    :offer!
+    :poll!
+    :pipe
+    :pipeline-async
+    :pipeline
+    :reduce
+    :transduce
+    :split
+    :onto-chan!
+    :to-chan!
+    :mult
+    :tap
+    :untap
+    :untap-all
+    :mix
+    :admix
+    :unmix
+    :unmix-all
+    :toggle
+    :solo-mode
+    :pub
+    :sub
+    :unsub
+    :unsub-all
+    :map
+    :merge
+    :into
+    :take]}
+  :async-macros.fnl
+  {:name "Async Macros"
+   :description "Convenience macros for asynchronous programming."
+   :doc-order [:go :go-loop]}}
+ :project-license "[EPL](https://gitlab.com/andreyorst/async.fnl/-/raw/master/LICENSE)"
+ :project-version (string.format "%s.%s.%s" MAJOR MINOR PATCH)
  :sandbox false
  :toc true}
