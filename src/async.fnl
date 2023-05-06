@@ -103,9 +103,10 @@ are present merge is done by calling `f` with both values."
 	e (values k (f e v))
 	nil (values k v)))))
 
-(fn -make-callback [f active-f]
-  (->> {:__call (fn [_ ...] (when (active-f) ((or f #nil) ...)))}
-       (setmetatable {:active? active-f})))
+(lambda -make-callback [?f active-f]
+  (let [f (or ?f #nil)]
+    (->> {:__call (fn [_ ...] (when (active-f) (f ...)))}
+         (setmetatable {:active? active-f}))))
 
 (local -nop
   (-make-callback #nil #true))
@@ -139,21 +140,18 @@ are present merge is done by calling `f` with both values."
   {:type -buf
    :full? (fn [{:buf buffer : size}]
             "Retrurn `true` if `buffer` length is equal to its `size` field."
-            (= (length buffer) size))
+            (>= (length buffer) size))
    :empty? (fn [{:buf buffer}]
              "Return `true` if `buffer` is empty."
              (= 0 (length buffer)))
    :length (fn [{:buf buffer}]
              "Return item count in the `buffer`."
              (length buffer))
-   :put (fn [{:buf buffer : size} val]
-          "Put `val` into the `buffer`.  Returns `true` if buffer has less than
-`size` items.  Returns `false` if `buffer` is full."
+   :put (fn [{:buf buffer} val]
+          "Put `val` into the `buffer`."
           (assert (not= val nil) "value must not be nil")
-          (let [len (length buffer)]
-            (when (< len size)
-              (tset buffer (+ 1 len) val)
-              true)))
+          (tset buffer (+ 1 (length buffer)) val)
+          true)
    :take (fn [{:buf buffer}]
            "Take value from the `buffer`."
            (when (> (length buffer) 0)
@@ -210,9 +208,10 @@ otherwise drop the oldest value."
 
 (local PromiseBuffer
   {:type -buf
-   :full? (fn [{:buf [val]}]
-            "Check if buffer has a value `val`."
-            (not= nil val))
+   :full? (fn []
+            "Check if buffer is full.
+Always returns `false`."
+            false)
    :empty? (fn [{:buf buffer}]
              "Return `true` if `buffer` is empty."
              (= 0 (length buffer)))
@@ -239,6 +238,7 @@ Doesn't remove the `val` from the buffer."
     :buf []}
    {:__index buffer-type
     :__name "buffer"
+    :__len (fn [self] (self:length))
     :__fennelview
     #(.. "#<" (: (tostring $) :gsub "table:" "buffer:") ">")}))
 
@@ -309,25 +309,52 @@ to current time."
   (when (or (not callback) (callback.active?))
     (case chan.buf
       (where buf (not (buf:full?)))
-      (do (case chan.xform
-            xform (xform buf val)
-            nil (buf:put val))
-          (when callback (callback true))
-          true))))
+      (let [put? (case chan.xform
+                   xform (case (pcall xform buf val)
+                           true true
+                           (false e) (chan:err-handler e))
+                   nil (buf:put val))]
+        (when callback
+          (case (pcall callback true)
+            (false e) (chan:err-handler e)))
+        (match (. (getmetatable buf) :__index)
+          PromiseBuffer
+          (while (> (length chan.takes) 0)
+            (let [take (table.remove chan.takes 1)]
+              (when (take.active?)
+                (print :resuming-for-promise-buf)
+                (case (coroutine.resume take.thunk val)
+                  (false msg) (chan:err-handler msg))))))
+        put?))))
+
+(fn -remove-inactive [chan]
+  (set chan.takes
+    (icollect [_ t (pairs (or chan.takes []))]
+      (when (t.active?) t)))
+  (set chan.puts
+    (icollect [_ [t &as put] (pairs (or chan.puts []))]
+      (when (t.active?) put))))
 
 (local Channel
   {:type -chan
    :put (fn [chan val callback enqueue?]
           (assert (not= val nil) "val must not be nil")
+          (-remove-inactive chan)
           (if chan.closed
-              (do (callback false) false)
+              (do (case (pcall callback false)
+                    (false e) (chan:err-handler e))
+                  false)
               (let [buffered? (-try-buffer chan val callback)]
                 ((fn loop []
                    (case chan
                      (where {: takes} (next takes))
                      (let [take (table.remove takes 1)]
                        (if (and (callback.active?) (take.active?))
-                           (do (callback true)
+                           (do (when (not buffered?)
+                                 ;; callback has not been called by `try-buffer`
+                                 (case (pcall callback true)
+                                   (false e) (chan:err-handler e)))
+                               (print :resuming-for-put-after-buf)
                                (case (coroutine.resume
                                       take.thunk
                                       (if buffered? (chan.buf:take) val))
@@ -335,53 +362,60 @@ to current time."
                                true)
                            (loop)))
                      (where {: puts} (< (length puts) 1024))
-                     (when (and (not buffered?) (callback.active?))
-                       (if (or (-main-thread?) enqueue?)
-                           (let [thunk (-make-thunk (->> (partial callback)
-                                                         coroutine.create)
-                                                    callback.active?
-                                                    "put")]
-                             (table.insert puts [thunk val]))
-                           (let [thunk (-make-thunk (coroutine.running)
-                                                    callback.active?
-                                                    "put")]
-                             (table.insert puts [thunk val])
-                             (coroutine.yield)
-                             (callback true)))
-                       true)
+                     (if buffered? true
+                         (callback.active?)
+                         (if (or (-main-thread?) enqueue?)
+                             (table.insert
+                              puts
+                              [(-make-thunk (->> (partial callback)
+                                                 coroutine.create)
+                                            callback.active?
+                                            "put")
+                               val])
+                             (let [thunk (-make-thunk (coroutine.running)
+                                                      callback.active?
+                                                      "put")]
+                               (table.insert puts [thunk val])
+                               (coroutine.yield)
+                               (case (pcall callback true)
+                                 (false e) (chan:err-handler e))))
+                         true)
                      _ (error "too many pending puts")))))))
    :take (fn loop [chan callback enqueue?]
            (assert (not= nil callback) "expected a callback")
+           (-remove-inactive chan)
            (let [res (case chan
                        (where {: buf} (not (buf:empty?)))
                        (when (callback.active?)
                          (let [val (buf:take)
-                               len (buf:length)
                                puts chan.puts]
-                           (callback val)
+                           (case (pcall callback val)
+                             (false e) (chan:err-handler e))
                            ((fn loop []
                               (case (table.remove puts 1)
                                 put (let [[put val*] put]
                                       (if (put.active?)
-                                          (let [_ (-try-buffer chan val*)
-                                                len* (buf:length)]
+                                          (let [_ (-try-buffer chan val*)]
+                                            (print :resuming-for-take-after-buf)
                                             (case (coroutine.resume put.thunk)
-                                              (false msg) (chan:err-handler msg))
-                                            (when (= len len*)
-                                              (loop)))
+                                              (false e) (chan:err-handler e))
+                                            (loop))
                                           (loop))))))
                            val))
                        (where {: puts} (next puts))
                        (let [[put val] (table.remove puts 1)]
                          (if (and (callback.active?) (put.active?))
-                             (do (callback val)
+                             (do (case (pcall callback val)
+                                   (false e) (chan:err-handler e))
+                                 (print :resuming-for-take-when-puts)
                                  (case (coroutine.resume put.thunk)
-                                   (false msg) (chan:err-handler msg))
+                                   (false e) (chan:err-handler e))
                                  val)
                              (loop chan callback enqueue?)))
                        (where {: takes} (< (length takes) 1024))
                        (if chan.closed
-                           (callback nil)
+                           (case (pcall callback nil)
+                             (false e) (chan:err-handler e))
                            (when (callback.active?)
                              (if (or (-main-thread?) enqueue?)
                                  (table.insert takes (-make-thunk (coroutine.create #(do (callback $) $))
@@ -392,21 +426,25 @@ to current time."
                                                           "take")
                                        _ (table.insert takes thunk)
                                        res (coroutine.yield)]
-                                   (callback res)
+                                   (case (pcall callback res)
+                                     (false e) (chan:err-handler e))
                                    res))))
                        _ (error "too many pending takes"))]
              res))
    :close (fn [chan]
             (when (not chan.closed)
+              (when chan.xform
+                (chan.xform chan.buf))
               (set chan.closed true)
               (while (> (length chan.takes) 0)
                 (let [take (table.remove chan.takes 1)]
                   (when (take.active?)
+                    (print :resuming-for-close)
                     (case (coroutine.resume take.thunk)
                       (false msg) (chan:err-handler msg)))))))})
 
-(fn -err-handler [mesg]
-  (io.stderr:write (tostring mesg) "\n")
+(fn -err-handler [e]
+  (io.stderr:write (tostring e) "\n")
   nil)
 
 (fn chan [buf-or-n xform err-handler]
@@ -426,7 +464,7 @@ value will be placed in the channel."
                 (xform (fn [...]
                          (case (values (select :# ...) ...)
                            (1 buffer) buffer
-                           (2 buffer val) (: buffer :put val)))))
+                           (2 buffer val) (buffer:put val)))))
         err-handler (or err-handler -err-handler)]
     (setmetatable
      {:puts []
@@ -435,7 +473,7 @@ value will be placed in the channel."
       :xform xform
       :err-handler (fn [ch err]
                      (case (err-handler err)
-                       res (ch:put ch res -nop)))}
+                       res (ch:put res -nop)))}
      {:__index Channel
       :__name "channel"
       :__fennelview
@@ -472,7 +510,7 @@ whole second value."
                            "Install luasocket or luaposix to get sub-second precision.\n")))
                     s*)
              _ (/ msecs 1000))
-        t (+ (-time) dt)]
+        t (+ (/ (math.ceil (* (-time) 10)) 10) dt)]
     (or (. -timeouts t)
         (let [c (chan)]
           (tset -timeouts t c)
@@ -494,11 +532,11 @@ is immediately available, will call `fn1` on calling thread.  Returns
 
 (fn <!! [port]
   "Takes a value from `port`.  Will return `nil` if closed.  Will block
-if nothing is available.  Not intended for use in direct or transitive
-calls from `(go ...)` blocks."
+if nothing is available.  Not allowed to be used in direct or
+transitive calls from `(go ...)` blocks."
   (assert (-main-thread?) "<!! used not on the main thread")
   (var val nil)
-  (port:take (-make-callback #(do (pprint :res $) (set val $)) #true) true)
+  (port:take (-make-callback #(set val $) #true) true)
   (while (and (= val nil) (not port.closed)))
   val)
 
@@ -522,8 +560,8 @@ accepted, will call `fn1` on calling thread."
 (fn >!! [port val]
   "Puts a `val` into `port`.  `nil` values are not allowed. Will block if no
 buffer space is available.  Returns `true` unless `port` is already
-closed.  Not intended for use in direct or transitive calls from `(go
-...)` blocks."
+closed.  Not allowed to be used in direct or transitive calls
+from `(go ...)` blocks."
   (assert (-main-thread?) ">!! used not on the main thread")
   (var (not-done res) true)
   (port:put
@@ -562,7 +600,9 @@ completed"
                 (close! c))
               coroutine.create
               coroutine.resume)
-      (false msg) (error msg))
+      (false msg)
+      (do (c:err-handler msg)
+          (close! c)))
     c))
 
 (macro go [...]
@@ -647,13 +687,17 @@ depended upon for side effects."
 `nil` values are not allowed.  Never blocks.  Returns `true` if offer
 succeeds."
   (assert (-chan? port) "expected a channel as first argument")
-  (port:put val (-make-callback #nil #false) false))
+  (when (or (next port.takes)
+            (and port.buf (not (port.buf:full?))))
+    (port:put val -nop false)))
 
 (fn poll! [port]
   "Takes a value from `port` if it's possible to do so immediately.
 Never blocks.  Returns value if successful, `nil` otherwise."
   (assert (-chan? port) "expected a channel")
-  (port:take (-make-callback #nil #false) false))
+  (when (or (next port.puts)
+            (and port.buf (not (port.buf:empty?))))
+    (port:take -nop false)))
 
 ;;; Operations
 
@@ -712,8 +756,7 @@ stop consuming the from channel if the to channel closes."
             (recur))))
     (go-loop []
       (case (<! results)
-        nil (when (not= close? false)
-              (close! to))
+        nil (when close? (close! to))
         p (case (<! p)
             res (do ((fn loop* []
                        (case (<! res)
@@ -755,7 +798,7 @@ if an exception occurs during transformation it will be called with
 the thrown value as an argument, and any non-nil return value will be
 placed in the channel."
    :fnl/arglist [n to xf from close? err-handler]}
-  (let [(err-handler close?) (if (= (select :# ...) 0) true ...)]
+  (let [(close? err-handler) (if (= (select :# ...) 0) true ...)]
     (-pipeline n to xf from close? err-handler :compute)))
 
 (fn split [p ch t-buf-or-n f-buf-or-n]
@@ -865,7 +908,7 @@ If a tap puts to a closed channel, it will be removed from the mult."
               (set dctr (length chs))
               (each [_ c (ipairs chs)]
                 (when (not (put! c val done))
-                  (m:untap* c)))
+                  (m:untap c)))
               ;;wait for all
               (when (next chs)
                 (<! dchan))
@@ -921,7 +964,7 @@ Each channel can have zero or more boolean modes set via 'toggle':
         changed #(put! change true)
         pick (fn [attr chs]
                (collect [c v (pairs chs)]
-                 (when (. attr v)
+                 (when (. v attr)
                    (values c true))))
         calc-state (fn []
                      (let [chs atom.cs
@@ -940,30 +983,30 @@ Each channel can have zero or more boolean modes set via 'toggle':
            Mux
            (muxch [_] out)
            Mix
-           (admix [_ ch] (tset atom :cs ch {}) (changed))
-           (unmix [_ ch] (tset atom :cs ch nil) (changed))
-           (unmix-all [_] (tset atom :cs {}) (changed))
+           (admix [_ ch] (tset atom.cs ch {}) (changed))
+           (unmix [_ ch] (tset atom.cs ch nil) (changed))
+           (unmix-all [_] (set atom.cs {}) (changed))
            (toggle [_ state-map]
-                   (tset atom :cs (-merge-with -merge atom.cs state-map))
+                   (set atom.cs (-merge-with -merge atom.cs state-map))
                    (changed))
            (solo-mode [_ mode]
                       (when (not (. solo-modes mode))
                         (assert false (.. "mode must be one of: "
                                           (table.concat (icollect [k (pairs solo-modes)] k) ", "))))
-                      (tset atom :solo-mode mode)
+                      (set atom.solo-mode mode)
                       (changed)))]
     (go-loop [{: solos : mutes : reads &as state} (calc-state)]
-      (let [[v c] (alts! reads)]
+      (let [[v c &as res] (alts! reads)]
         (if (or (= nil v) (= c change))
             (do (when (= nil v)
-                  (tset atom :cs c nil))
+                  (tset atom.cs c nil))
                 (recur (calc-state)))
             (if (or (. solos c)
                     (and (not (next solos)) (not (. mutes c))))
                 (when (>! out v)
                   (recur state))
                 (recur state)))))
-    (doto m (tset :state atom) (tset :st calc-state))))
+    m))
 
 (fn admix [mix ch]
   "Adds `ch` as an input to the `mix`."
@@ -1135,7 +1178,7 @@ return chanel will close.  The output channel is unbuffered by
 default, unless `buf-or-n` is given."
   (let [out (chan buf-or-n)]
     (go (var done false)
-        (for [i 0 (- n 1) :until done]
+        (for [i 1 n :until done]
           (case (<! ch)
             v (>! out v)
             nil (set done true)))
@@ -1191,19 +1234,17 @@ default, unless `buf-or-n` is given."
    (pipe (to-chan! [1 2 3 4 5]) c)
    (take! (into [] c) pprint))
 
- (fn mapper [f]
+ (fn mapping [f]
    (fn [rf]
      (fn [...]
-       (print :mapper ...)
        (case (select :# ...)
          0 (rf)
          1 (rf ...)
          _ (rf ... (f (select 2 ...)))))))
 
- (fn filterer [f]
+ (fn filtering [f]
    (fn [rf]
      (fn [...]
-       (print :filterer ...)
        (case (select :# ...)
          0 (rf)
          1 (rf ...)
@@ -1215,23 +1256,23 @@ default, unless `buf-or-n` is given."
  (fn comp [f g]
    #(f (g $...)))
 
- (let [c (chan 1 (mapper #(* $ $)))]
+ (let [c (chan 1 (mapping #(* $ $)))]
    (pipe (to-chan! (fcollect [i 1 10] i)) c)
    (take! (into [] c) pprint))
 
- (let [c (chan 1 (filterer #(= 0 (% $ 2))))]
+ (let [c (chan 1 (filtering #(= 0 (% $ 2))))]
    (pipe (to-chan! (fcollect [i 1 10] i)) c)
    (take! (into [] c) pprint))
 
- (let [c (chan 1 (comp (filterer #(= 0 (% $ 2)))
-                       (mapper #(* $ $))))]
+ (let [c (chan 1 (comp (filtering #(= 0 (% $ 2)))
+                       (mapping #(* $ $))))]
    (pipe (to-chan! (fcollect [i 1 10] i)) c)
    (take! (into [] c) pprint))
 
  (let [c (to-chan! [1 2 3 4 5])
        out (chan)]
-   (pipeline 10 out (comp (filterer #(= 0 (% $ 2)))
-                          (mapper #(* $ $))) c)
+   (pipeline 10 out (comp (filtering #(= 0 (% $ 2)))
+                          (mapping #(* $ $))) c)
    (take! (into [] out) pprint))
 
  (macro time [body]
@@ -1264,6 +1305,7 @@ default, unless `buf-or-n` is given."
     (pprint :remove (<!! c))))
 
  (do
+   (print)
    (local c (chan))
    (local m (mult c))
    (local c1 (chan))
