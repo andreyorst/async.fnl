@@ -1,4 +1,4 @@
-# Async.fnl (1.6.20)
+# Async.fnl (1.6.22)
 A Fennel library providing facilities for async programming and communication.
 
 **Table of contents**
@@ -46,6 +46,8 @@ A Fennel library providing facilities for async programming and communication.
 - [`merge`](#merge)
 - [`into`](#into)
 - [`take`](#take-1)
+- `<!!`
+- `>!!`
 - [`DroppingBuffer.empty?`](#droppingbufferempty)
 - [`DroppingBuffer.full?`](#droppingbufferfull)
 - [`DroppingBuffer.length`](#droppingbufferlength)
@@ -628,6 +630,29 @@ Returns a channel that will return, at most, `n` items from
 `ch`.  After n items have been returned, or `ch` has been closed, the
 return chanel will close.  The output channel is unbuffered by
 default, unless `buf-or-n` is given.
+
+## `<!!`
+Function signature:
+
+```
+(<!! port)
+```
+
+Takes a value from `port`.  Will return `nil` if closed.  Will block
+if nothing is available.  Not intended for use in direct or transitive
+calls from `(go ...)` blocks.
+
+## `>!!`
+Function signature:
+
+```
+(>!! port val)
+```
+
+Puts a `val` into `port`.  `nil` values are not allowed. Will block if no
+buffer space is available.  Returns `true` unless `port` is already
+closed.  Not intended for use in direct or transitive calls from `(go
+...)` blocks.
 
 ## `DroppingBuffer.empty?`
 Function signature:

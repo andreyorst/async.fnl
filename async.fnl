@@ -484,7 +484,7 @@ whole second value."
 is immediately available, will call `fn1` on calling thread.  Returns
 `nil`."
    :fnl/arglist [port fn1 on-caller?]}
-  (assert (-chan? port) "expected a port as first argument")
+  (assert (-chan? port) "expected a channel as first argument")
   (assert (not= nil fn1) "expected a callback")
   (let [on-caller? (if (= (select :# ...) 0) true ...)]
     (port:take
@@ -492,10 +492,21 @@ is immediately available, will call `fn1` on calling thread.  Returns
      (and fn1 on-caller?))
     nil))
 
+(fn <!! [port]
+  "Takes a value from `port`.  Will return `nil` if closed.  Will block
+if nothing is available.  Not intended for use in direct or transitive
+calls from `(go ...)` blocks."
+  (assert (-main-thread?) "<!! used not on the main thread")
+  (var val nil)
+  (port:take (-make-callback #(do (pprint :res $) (set val $)) #true) true)
+  (while (and (= val nil) (not port.closed)))
+  val)
+
 (fn <! [port]
   "Takes a value from `port`.  Must be called inside a `(go ...)` block.
 Will return `nil` if closed.  Will park if nothing is available."
   (assert (not (-main-thread?)) "<! used not in (go ...) block")
+  (assert (-chan? port) "expected a channel as first argument")
   (port:take -nop false))
 
 (fn put! [port val fn1 ...]
@@ -507,6 +518,22 @@ accepted, will call `fn1` on calling thread."
   (assert (-chan? port) "expected a channel as first argument")
   (let [on-caller? (if (= (select :# ...) 0) true ...)]
     (port:put val (-make-callback fn1 #true) (not on-caller?))))
+
+(fn >!! [port val]
+  "Puts a `val` into `port`.  `nil` values are not allowed. Will block if no
+buffer space is available.  Returns `true` unless `port` is already
+closed.  Not intended for use in direct or transitive calls from `(go
+...)` blocks."
+  (assert (-main-thread?) ">!! used not on the main thread")
+  (var (not-done res) true)
+  (port:put
+   val
+   (-make-callback
+    #(set (not-done res) (values false $))
+    #true)
+   true)
+  (while not-done)
+  res)
 
 (fn >! [port val]
   "Puts a `val` into `port`.  `nil` values are not allowed.  Must be
@@ -1225,8 +1252,16 @@ default, unless `buf-or-n` is given."
     (local data (to-chan! [1 2 3 4 5 6 7 8 9 10]))
     (local results (chan))
     (pipeline-async 10 results af-inc data true)
-    (take! (into [] results) pprint)
-    (while (not results.closed))))
+    (pprint (<!! (into [] results)))))
+
+ (time
+  (let [c (chan 1)]
+    (>!! c 10)
+    (pprint :put1 c.buf.buf c.puts c.takes)
+    (go (<! (timeout 3000)) (print :remove (<! c)))
+    (>!! c 20)
+    (pprint :put2 c.buf.buf c.puts c.takes)
+    (pprint :remove (<!! c))))
 
  (do
    (local c (chan))
@@ -1301,9 +1336,11 @@ default, unless `buf-or-n` is given."
  : chan
  : promise-chan
  : take!
+ : <!!
  : <!
  : timeout
  : put!
+ : >!!
  : >!
  : close!
  :go go*
