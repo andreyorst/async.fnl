@@ -1,4 +1,4 @@
-# Async Macros (1.6.22)
+# Async Macros (1.6.10)
 Convenience macros for asynchronous programming.
 
 **Table of contents**

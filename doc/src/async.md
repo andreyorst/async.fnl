@@ -1,4 +1,4 @@
-# Async.fnl (1.6.22)
+# Async.fnl (1.6.10)
 A Fennel library providing facilities for async programming and communication.
 
 **Table of contents**
@@ -48,26 +48,33 @@ A Fennel library providing facilities for async programming and communication.
 - [`take`](#take-1)
 - `<!!`
 - `>!!`
-- [`DroppingBuffer.empty?`](#droppingbufferempty)
+- [`DroppingBuffer.add!`](#droppingbufferadd)
+- [`DroppingBuffer.close-buf!`](#droppingbufferclose-buf)
 - [`DroppingBuffer.full?`](#droppingbufferfull)
 - [`DroppingBuffer.length`](#droppingbufferlength)
-- [`DroppingBuffer.put`](#droppingbufferput)
-- [`DroppingBuffer.take`](#droppingbuffertake)
-- [`FixedBuffer.empty?`](#fixedbufferempty)
+- [`DroppingBuffer.remove!`](#droppingbufferremove)
+- [`FixedBuffer.add!`](#fixedbufferadd)
+- [`FixedBuffer.close-buf!`](#fixedbufferclose-buf)
 - [`FixedBuffer.full?`](#fixedbufferfull)
 - [`FixedBuffer.length`](#fixedbufferlength)
-- [`FixedBuffer.put`](#fixedbufferput)
-- [`FixedBuffer.take`](#fixedbuffertake)
-- [`PromiseBuffer.empty?`](#promisebufferempty)
+- [`FixedBuffer.remove!`](#fixedbufferremove)
+- [`PromiseBuffer.add!`](#promisebufferadd)
+- [`PromiseBuffer.close-buf!`](#promisebufferclose-buf)
 - [`PromiseBuffer.full?`](#promisebufferfull)
 - [`PromiseBuffer.length`](#promisebufferlength)
-- [`PromiseBuffer.put`](#promisebufferput)
-- [`PromiseBuffer.take`](#promisebuffertake)
-- [`SlidingBuffer.empty?`](#slidingbufferempty)
+- [`PromiseBuffer.remove!`](#promisebufferremove)
+- [`SlidingBuffer.add!`](#slidingbufferadd)
+- [`SlidingBuffer.close-buf!`](#slidingbufferclose-buf)
+- [`SlidingBuffer.closed`](#slidingbufferclosed)
 - [`SlidingBuffer.full?`](#slidingbufferfull)
 - [`SlidingBuffer.length`](#slidingbufferlength)
-- [`SlidingBuffer.put`](#slidingbufferput)
-- [`SlidingBuffer.take`](#slidingbuffertake)
+- [`SlidingBuffer.remove!`](#slidingbufferremove)
+- [`reduced`](#reduced)
+- [`reduced?`](#reduced-1)
+- [`type.add!`](#typeadd)
+- [`type.close-buf!`](#typeclose-buf)
+- [`type.full?`](#typefull)
+- [`type.remove!`](#typeremove)
 
 ## `buffer`
 Function signature:
@@ -639,8 +646,8 @@ Function signature:
 ```
 
 Takes a value from `port`.  Will return `nil` if closed.  Will block
-if nothing is available.  Not intended for use in direct or transitive
-calls from `(go ...)` blocks.
+if nothing is available.  Not allowed to be used in direct or
+transitive calls from `(go ...)` blocks.
 
 ## `>!!`
 Function signature:
@@ -651,17 +658,27 @@ Function signature:
 
 Puts a `val` into `port`.  `nil` values are not allowed. Will block if no
 buffer space is available.  Returns `true` unless `port` is already
-closed.  Not intended for use in direct or transitive calls from `(go
-...)` blocks.
+closed.  Not allowed to be used in direct or transitive calls
+from `(go ...)` blocks.
 
-## `DroppingBuffer.empty?`
+## `DroppingBuffer.add!`
 Function signature:
 
 ```
-(DroppingBuffer.empty? {:buf buffer})
+(DroppingBuffer.add! {:buf buffer :size size &as this} val)
 ```
 
-Return `true` if `buffer` is empty.
+Put `val` into the `buffer` if item count is less than `size`,
+otherwise drop the value.
+
+## `DroppingBuffer.close-buf!`
+Function signature:
+
+```
+(DroppingBuffer.close-buf! b)
+```
+
+**Undocumented**
 
 ## `DroppingBuffer.full?`
 Function signature:
@@ -682,33 +699,32 @@ Function signature:
 
 Return item count in the `buffer`.
 
-## `DroppingBuffer.put`
+## `DroppingBuffer.remove!`
 Function signature:
 
 ```
-(DroppingBuffer.put {:buf buffer :size size} val)
-```
-
-Put `val` into the `buffer` if item count is less than `size`,
-otherwise drop the value.
-
-## `DroppingBuffer.take`
-Function signature:
-
-```
-(DroppingBuffer.take {:buf buffer})
+(DroppingBuffer.remove! {:buf buffer})
 ```
 
 Take value from the `buffer`.
 
-## `FixedBuffer.empty?`
+## `FixedBuffer.add!`
 Function signature:
 
 ```
-(FixedBuffer.empty? {:buf buffer})
+(FixedBuffer.add! {:buf buffer &as this} val)
 ```
 
-Return `true` if `buffer` is empty.
+Add `val` into the `buffer`.
+
+## `FixedBuffer.close-buf!`
+Function signature:
+
+```
+(FixedBuffer.close-buf! b)
+```
+
+**Undocumented**
 
 ## `FixedBuffer.full?`
 Function signature:
@@ -728,42 +744,43 @@ Function signature:
 
 Return item count in the `buffer`.
 
-## `FixedBuffer.put`
+## `FixedBuffer.remove!`
 Function signature:
 
 ```
-(FixedBuffer.put {:buf buffer :size size} val)
-```
-
-Put `val` into the `buffer`.  Returns `true` if buffer has less than
-`size` items.  Returns `false` if `buffer` is full.
-
-## `FixedBuffer.take`
-Function signature:
-
-```
-(FixedBuffer.take {:buf buffer})
+(FixedBuffer.remove! {:buf buffer})
 ```
 
 Take value from the `buffer`.
 
-## `PromiseBuffer.empty?`
+## `PromiseBuffer.add!`
 Function signature:
 
 ```
-(PromiseBuffer.empty? {:buf buffer})
+(PromiseBuffer.add! {:buf buffer &as this} val)
 ```
 
-Return `true` if `buffer` is empty.
+Put `val` into the `buffer` if there isnt one already,
+otherwise drop the value.
+
+## `PromiseBuffer.close-buf!`
+Function signature:
+
+```
+(PromiseBuffer.close-buf! b)
+```
+
+**Undocumented**
 
 ## `PromiseBuffer.full?`
 Function signature:
 
 ```
-(PromiseBuffer.full? {:buf [val]})
+(PromiseBuffer.full?)
 ```
 
-Check if buffer has a value `val`.
+Check if buffer is full.
+Always returns `false`.
 
 ## `PromiseBuffer.length`
 Function signature:
@@ -774,34 +791,37 @@ Function signature:
 
 Return item count in the `buffer`.
 
-## `PromiseBuffer.put`
+## `PromiseBuffer.remove!`
 Function signature:
 
 ```
-(PromiseBuffer.put {:buf buffer} val)
-```
-
-Put `val` into the `buffer` if there isnt one already,
-otherwise drop the value.
-
-## `PromiseBuffer.take`
-Function signature:
-
-```
-(PromiseBuffer.take {:buf [val]})
+(PromiseBuffer.remove! {:buf [val]})
 ```
 
 Take value from the buffer.
 Doesn't remove the `val` from the buffer.
 
-## `SlidingBuffer.empty?`
+## `SlidingBuffer.add!`
 Function signature:
 
 ```
-(SlidingBuffer.empty? {:buf buffer})
+(SlidingBuffer.add! {:buf buffer :size size &as this} val)
 ```
 
-Return `true` if `buffer` is empty.
+Put `val` into the `buffer` if item count is less than `size`,
+otherwise drop the oldest value.
+
+## `SlidingBuffer.close-buf!`
+Function signature:
+
+```
+(SlidingBuffer.close-buf! b)
+```
+
+**Undocumented**
+
+## `SlidingBuffer.closed`
+**Undocumented**
 
 ## `SlidingBuffer.full?`
 Function signature:
@@ -822,24 +842,32 @@ Function signature:
 
 Return item count in the `buffer`.
 
-## `SlidingBuffer.put`
+## `SlidingBuffer.remove!`
 Function signature:
 
 ```
-(SlidingBuffer.put {:buf buffer :size size} val)
-```
-
-Put `val` into the `buffer` if item count is less than `size`,
-otherwise drop the oldest value.
-
-## `SlidingBuffer.take`
-Function signature:
-
-```
-(SlidingBuffer.take {:buf buffer})
+(SlidingBuffer.remove! {:buf buffer})
 ```
 
 Take value from the `buffer`.
+
+## `reduced`
+**Undocumented**
+
+## `reduced?`
+**Undocumented**
+
+## `type.add!`
+**Undocumented**
+
+## `type.close-buf!`
+**Undocumented**
+
+## `type.full?`
+**Undocumented**
+
+## `type.remove!`
+**Undocumented**
 
 
 ---

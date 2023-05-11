@@ -1,1 +1,17 @@
-{:reporter :dots}
+;; -*- mode: fennel -*-
+(local reporter
+  {:ns-start (fn [ns] (io.write "Testing '"ns "':\n"))
+   :ns-report (fn [ns ok?] (io.write ns ": " (if ok? "PASS" "FAIL") "\n---\n"))
+   :test-start (fn [_ test-name] (io.write "  " test-name ": ") (io.flush))
+   :test-report (fn [ok? _ _ msg]
+                  (io.write (if ok? "PASS" "FAIL") "\n")
+                  (when (not ok?)
+                    (io.write "    Reason:\n")
+                    (each [line (msg:gmatch "(.-)\n")]
+                      (io.write "    " line "\n"))))
+   :stats-report (fn [warnings errors]
+                   (if (> (length errors) 0)
+                       (io.write "Test failure\n")
+                       (io.write "Test passed\n")))})
+
+{: reporter}

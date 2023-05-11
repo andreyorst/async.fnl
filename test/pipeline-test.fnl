@@ -3,10 +3,10 @@
         : pipeline-async : pipeline : put! : timeout : alts! : into}
   (require :src.async))
 
-(fn take!! [c tout]
+(fn take!! [c tout val]
   (<!! (go #(let [t (timeout (or tout 300))]
               (match (alts! [c t])
-                [nil t] :timeout
+                [_ t] (or val :timeout)
                 [_] _)))))
 
 (fn pipeline-tester [pipeline-fn n inputs xf]
@@ -98,6 +98,6 @@
 (deftest pipelines-compute
   (let [input (faccumulate [res [] i 1 math.huge :until (= 50 (length res))]
                 (fcollect [i 15 37 :into res :until (= 50 (length res))] i))
-        last #(. $ (length $))]
+        last (fn [t] (. t (length t)))]
     (assert-eq (slow-fib (last input))
                (last (take!! (pipeline-tester pipeline 8 input (map slow-fib)))))))

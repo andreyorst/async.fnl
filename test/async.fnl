@@ -1,6 +1,6 @@
 (require-macros :fennel-test)
-(local {: <! : >! : <!! : >!! : chan : close! : to-chan! :go go* : promise-chan
-        : pipeline-async : pipeline : take! : put! : timeout : alts! : into : offer! : poll!
+(local {: <! : >! : <!! : chan : close! : to-chan! :go go* : promise-chan
+        : pipeline-async : pipeline : pipe : take! : put! : timeout : alts! : into : offer! : poll!
         &as async}
   (require :src.async))
 
@@ -10,7 +10,7 @@
 (fn take!! [c tout val]
   (<!! (go (let [t (timeout (or tout 300))]
              (match (alts! [c t])
-               [nil t] (or val :timeout)
+               [_ t] (or val :timeout)
                [_] _)))))
 
 (deftest put-take-chan-1-test
@@ -85,7 +85,7 @@
                (let [out (chan)]
                  (async.pipe (async.to-chan! [1 2 3 4 5])
                              out)
-                 (<! (async.into [] out))))))
+                 (<! (into [] out))))))
 
 (deftest split-test
   ;; Must provide buffers for channels else the tests won't complete
@@ -96,8 +96,8 @@
                         #(= 0 (% $ 2))
                         (async.to-chan! [1 2 3 4 5 6])
                         5 5)]
-        (>! a (<! (async.into [] even)))
-        (>! b (<! (async.into [] odd)))))
+        (>! a (<! (into [] even)))
+        (>! b (<! (into [] odd)))))
     (assert-eq [2 4 6] (take!! a))
     (assert-eq [1 3 5] (take!! b))))
 
@@ -111,7 +111,7 @@
                    (async.to-chan! (range 4))
                    (async.to-chan! (range 4))]
                   (async.map #(+ $1 $2 $3 $4))
-                  (async.into [])
+                  (into [])
                   take!!)))
 
 (fn frequencies [t]
@@ -127,7 +127,7 @@
                    (async.to-chan! (range 4))
                    (async.to-chan! (range 4))]
                   async.merge
-                  (async.into [])
+                  (into [])
                   take!!
                   frequencies)))
 
@@ -139,13 +139,13 @@
     (async.tap m a)
     (async.tap m b)
     (async.pipe (async.to-chan! (range 4)) src)
-    (assert-eq [0 1 2 3] (take!! (async.into [] a)))
-    (assert-eq [0 1 2 3] (take!! (async.into [] b)))))
+    (assert-eq [0 1 2 3] (take!! (into [] a)))
+    (assert-eq [0 1 2 3] (take!! (into [] b)))))
 
 (deftest mix-test
   (let [out (chan)
         mx (async.mix out)
-        take-out (chan 6) ;; TODO: doesn't work without the buffer
+        take-out (chan)
         take6 (go (for [x 1 6]
                     (>! take-out (<! out)))
                   (close! take-out))]
@@ -170,22 +170,32 @@
     (async.sub p :int b-ints)
     (async.pipe (async.to-chan! [1 "a" 2 "b" 3 "c"]) src)
     (assert-eq [1 2 3]
-               (take!! (async.into [] a-ints)))
+               (take!! (into [] a-ints)))
     (assert-eq [1 2 3]
-               (take!! (async.into [] b-ints)))
+               (take!! (into [] b-ints)))
     (assert-eq ["a" "b" "c"]
-               (take!! (async.into [] a-strs)))
+               (take!! (into [] a-strs)))
     (assert-eq ["a" "b" "c"]
-               (take!! (async.into [] b-strs)))))
+               (take!! (into [] b-strs)))))
 
 (deftest reduce-test
-  (assert-eq 0 (take!! (async.reduce #(+ $1 $2) 0 (async.to-chan! []))))
-  (assert-eq 45 (take!! (async.reduce #(+ $1 $2) 0 (async.to-chan! (range 10)))))
-
-  ;; TODO: reduced
-  ;; (assert-eq :foo (take!! (async.reduce #(if (= $2 2) (reduced :foo) $1) 0
-  ;;                                       (async.to-chan! (range 10)))))
-  )
+  (->> []
+       async.to-chan!
+       (async.reduce #(+ $1 $2) 0)
+       take!!
+       (assert-eq 0))
+  (->> 10
+       range
+       async.to-chan!
+       (async.reduce #(+ $1 $2) 0)
+       take!!
+       (assert-eq 45))
+  (->> 10
+       range
+       async.to-chan!
+       (async.reduce #(if (= $2 2) (async.reduced :foo) $1) 0)
+       take!!
+       (assert-eq :foo)))
 
 (deftest dispatch-bugs
   (testing "puts are moved to buffers"
@@ -211,8 +221,7 @@
     (go* #((fn loop [i]
              (if (< i n)
                  (do
-                   ;; TODO breaks for some reason
-                   ;; (<! (timeout 10))
+                   (<! (timeout 10))
                    (>! c i)
                    (loop (+ 1 i)))
                  (close! c))) 0))
@@ -268,7 +277,7 @@
       1 (rf ...)
       2 (let [(result input) ...]
           (accumulate [res result _ v (ipairs input)]
-            (rf res input))))))
+            (rf res v))))))
 
 (fn comp [f g]
   #(f (g $...)))
@@ -279,22 +288,23 @@
 (deftest transducers-test
   (testing "base case without transducer"
     (assert-eq (range 10)
-               (take!! (async.into [] (integer-chan 10 nil)) 2000)))
+               (take!! (into [] (integer-chan 10 nil)) 2000)))
   (testing "mapping transducer"
     (assert-eq (icollect [_ v (ipairs (range 10))] (tostring v))
-               (take!! (async.into [] (integer-chan 10 (map tostring))) 2000)))
+               (take!! (into [] (integer-chan 10 (map tostring))) 2000)))
   (testing "filtering transducer"
     (assert-eq (icollect [_ v (ipairs (range 10))] (when (= 0 (% v 2)) v))
-               (take!! (async.into [] (integer-chan 10 (filter #(= 0 (% $ 2))))) 2000)))
+               (take!! (into [] (integer-chan 10 (filter #(= 0 (% $ 2))))) 2000)))
   (testing "flatpmapping transducer"
     (let [pair-of (fn [x] [x x])]
-      (assert-eq (icollect [_ v (ipairs (range 10))] (pair-of v))
-                 (take!! (async.into [] (integer-chan 10 (mapcat pair-of))) 3000))))
+      (assert-eq (accumulate [res [] _ v (ipairs (range 10))]
+                   (doto res (table.insert v) (table.insert v)))
+                 (take!! (into [] (integer-chan 10 (mapcat pair-of))) 2000))))
   (testing "partitioning transducer"
     (assert-eq [[0 1 2 3 4] [5 6 7]]
-               (take!! (async.into [] (integer-chan 8 (partition-all 5))) 3000))
+               (take!! (into [] (integer-chan 8 (partition-all 5))) 3000))
     (assert-eq [[0 1 2 3 4] [5 6 7 8 9]]
-               (take!! (async.into [] (integer-chan 10 (partition-all 5))) 3000))))
+               (take!! (into [] (integer-chan 10 (partition-all 5))) 3000))))
 
 (deftest bufferless-test
   (let [c (chan)

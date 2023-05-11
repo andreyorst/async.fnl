@@ -9,7 +9,7 @@ MAJOR and MINOR provide some relative indication of the size of the change, but 
 In general, all changes endeavor to be non-breaking (by moving to new names rather than by breaking existing names).
 COMMITS is an ever-increasing counter of commits since the beginning of this repository.
 
-Copy [async.fnl](https://gitlab.com/andreyorst/async.fnl/-/raw/main/async.fnl) somewhere into your project.
+Copy [async.fnl](https://gitlab.com/andreyorst/async.fnl/-/raw/main/src/async.fnl) somewhere into your project.
 
 ## Differences from `core.async`
 
@@ -27,7 +27,13 @@ Please report bugs or inconsistencies to the project [issue tracker](https://git
 
 ## Documentation
 
-The documentation is auto-generated with [Fenneldoc](https://gitlab.com/andreyorst/fenneldoc) and can be found [here](https://gitlab.com/andreyorst/async.fnl/-/blob/main/doc/async.md).
+The documentation is auto-generated with [Fenneldoc](https://gitlab.com/andreyorst/fenneldoc) and can be found [here](https://gitlab.com/andreyorst/async.fnl/-/blob/main/doc/src/async.md).
+
+## Running tests
+
+Run the following command at the root of the repository:
+
+    fennel-test/runner tests/*.fnl
 
 ## Contributing
 

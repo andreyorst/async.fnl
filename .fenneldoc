@@ -22,7 +22,7 @@
  :out-dir "./doc"
  :project-copyright "Copyright (c) 2023 Andrey Listopadov"
  :modules-info
- {:async.fnl
+ {:src/async.fnl
   {:name "async.fnl"
    :description "A Fennel library providing facilities for async programming and communication."
    :doc-order
@@ -69,7 +69,7 @@
     :merge
     :into
     :take]}
-  :async-macros.fnl
+  :src/async-macros.fnl
   {:name "Async Macros"
    :description "Convenience macros for asynchronous programming."
    :doc-order [:go :go-loop]}}
