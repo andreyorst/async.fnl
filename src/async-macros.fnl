@@ -53,13 +53,13 @@ body."
   (walk `(do ,(macroexpand body)) true))
 
 (fn go-loop [bindings ...]
-  {:fnl/arglist [bindings & body]
-   :fnl/docstring "Asyncrhonous loop macro.
+  "Asyncrhonous loop macro.
 
 Similar to `let`, but binds a special `recur` call that will reassign
 the values of the `bindings` and restart the loop `body` when called
 in tail position.  Unlike `let`, doesn't support multiple-value
-destructuring specifically."}
+destructuring specifically."
+  {:fnl/arglist [bindings & body]}
   (let [recur (sym :recur)
         keys []
         gensyms []
@@ -81,22 +81,22 @@ destructuring specifically."}
 
         ;; The gensyms we use for function application
         (table.insert keys key)))
-    `(let [{:go go#} (require :async)]
+    `(let [{:go go#} (require :async)] ;; TODO this isn't portable
        (go# #(let ,bindings*
                ((fn ,recur ,keys
                   ,...)
                 ,(table.unpack gensyms)))))))
 
 (fn go [...]
-  {:fnl/arglist [& body]
-   :fnl/docstring "Asynchronously executes the `body`, returning immediately to the
+  "Asynchronously executes the `body`, returning immediately to the
 calling thread. Additionally, any visible calls to `<!`, `>!` and
 `alts!`  channel operations within the `body` will block (if
 necessary) by 'parking' the calling thread rather than tying up the
 only Lua thread.  Upon completion of the operation, the `body` will be
 resumed.  Returns a channel which will receive the result of the `body`
-when completed."}
-  `(let [{:go go#} (require :async)]
+when completed."
+  {:fnl/arglist [& body]}
+  `(let [{:go go#} (require :async)] ;; TODO this isn't portable
      (go# #(do ,...))))
 
 ;; TODO alt!

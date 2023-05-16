@@ -9,6 +9,20 @@ You must not remove this notice, or any other, from this software.")
 
 ;;; Helpers
 
+(set package.preload.reduced
+  (or package.preload.reduced
+      ;; https://gitlab.com/andreyorst/reduced.lua
+      #(let [Reduced
+             {:__fennelview
+              (fn [[x] view options indent]
+                (.. "#<reduced: " (view x options (+ 11 indent)) ">"))
+              :__index {:unbox (fn [[x]] x)}
+              :__name :reduced
+              :__tostring (fn [[x]] (.. "reduced: " (tostring x)))}]
+         (fn reduced [value] (setmetatable [value] Reduced))
+         (fn reduced? [value] (rawequal (getmetatable value) Reduced))
+         {:is_reduced reduced? : reduced :reduced? reduced?})))
+
 (local {: reduced : reduced?} (require :reduced))
 
 (local -lib-name

@@ -118,15 +118,12 @@
 ;;; Test loading
 
 (fn load-tests []
-  (let [g _G]
-    (each [_ file (ipairs arg)]
-      (let [module-name (module-from-file file)
-            module-tests []]
-        (set-forcibly! _G (deepcopy _G))
-        (table.insert tests [module-name module-tests])
-        (fennel.dofile file {:env _G :scope (fennel.scope)}
-                       module-name module-tests fixtures)))
-    (set-forcibly! _G g)))
+  (each [_ file (ipairs arg)]
+    (let [module-name (module-from-file file)
+          module-tests []]
+      (table.insert tests [module-name module-tests])
+      (fennel.dofile file {:env (deepcopy _G) :scope (fennel.scope)}
+                     module-name module-tests fixtures))))
 
 (fn shuffle-table [t]
   (for [i (length t) 2 -1]
