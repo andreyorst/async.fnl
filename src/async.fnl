@@ -7,6 +7,9 @@ this software in any fashion, you are agreeing to be bound by the terms of
 this license.
 You must not remove this notice, or any other, from this software.")
 
+(local lib-name
+  (or ... "async"))
+
 ;;; Helpers
 
 (set package.preload.reduced
@@ -23,17 +26,15 @@ You must not remove this notice, or any other, from this software.")
          (fn reduced? [value] (rawequal (getmetatable value) Reduced))
          {:is_reduced reduced? : reduced :reduced? reduced?})))
 
-(local {: reduced : reduced?} (require :reduced))
-
-(local -lib-name
-  (or ... "async"))
+(local {: reduced : reduced?}
+  (require :reduced))
 
 (local {: gethook : sethook}
   (case _G.debug
     {: gethook : sethook} {: gethook : sethook}
     _ (do (io.stderr:write
            "WARNING: debug library is unawailable.  "
-           -lib-name " uses debug.sethook to advance timers.  "
+           lib-name " uses debug.sethook to advance timers.  "
            "Time-related features are disabled.\n")
           {})))
 
@@ -60,16 +61,23 @@ Appends the hook to existing one, if found, unless the hook is `f`."
        count))))
 
 (macro defprotocol [name ...]
-  `(local ,name
-     ,(faccumulate [methods {} i 1 (select :# ...)]
-        (let [method (select i ...)]
-          (assert-compile (list? method) "expected method declaration")
-          (let [[name arglist body] method]
-            (assert-compile (sym? name) "expected named method" name)
-            (assert-compile (sequence? arglist) (.. "expected arglist for method " (tostring name)) arglist)
-            (assert-compile (or (= :string (type body)) (= nil body)) (.. "expected no body for method " (tostring name)) body)
-            (doto methods
-              (tset (tostring name) `#(<= $ ,(length arglist)))))))))
+  `(local ,(faccumulate [names {'&as name} i 1 (select :# ...)]
+             (let [method (select i ...)]
+               (assert-compile (list? method) "expected method declaration")
+               (let [[name] method]
+                 (assert-compile (sym? name) "expected named method" name)
+                 (doto names
+                   (tset (tostring name) name)))))
+          ,(faccumulate [methods {} i 1 (select :# ...)]
+             (let [method (select i ...)
+                   [name arglist body] method]
+               (assert-compile (sequence? arglist) (.. "expected arglist for method " (tostring name)) arglist)
+               (assert-compile (or (= :string (type body)) (= nil body)) (.. "expected no body for method " (tostring name)) body)
+               (doto methods
+                 (tset (tostring name)
+                       `(lambda ,name ,arglist
+                          ,body
+                          (: ,(. arglist 1) ,(tostring name) ,(unpack arglist 2)))))))))
 
 (macro reify [...]
   (let [index (gensym)
@@ -88,9 +96,7 @@ Appends the hook to existing one, if found, unless the hook is `f`."
              (table.insert
               actions
               `(case (. ,current ,(tostring name))
-                 f# (if (f# ,(length arglist))
-                        (tset ,index ,(tostring name) (fn ,(unpack fnspec)))
-                        (error ,(.. "arity mismatch for method " (tostring name))))
+                 f# (tset ,index ,(tostring name) (fn ,(unpack fnspec)))
                  ,(sym :_) (error ,(.. "Protocol " (tostring current) " doesn't define method " (tostring name)))))))
        (when (not= 0 (select :# ...))
          (loop ...)))
@@ -122,6 +128,62 @@ are present merge is done by calling `f` with both values."
       (case (. res k)
 	e (values k (f e v))
 	nil (values k v)))))
+
+;;; Macros
+
+(eval-compiler
+  (local lib-name
+    (or ... "async"))
+
+  (fn go [...]
+    "Asynchronously executes the `body`, returning immediately to the
+  calling thread. Additionally, any visible calls to `<!`, `>!` and
+  `alts!`  channel operations within the `body` will block (if
+  necessary) by 'parking' the calling thread rather than tying up the
+  only Lua thread.  Upon completion of the operation, the `body` will be
+  resumed.  Returns a channel which will receive the result of the `body`
+  when completed."
+    {:fnl/arglist [& body]}
+    `(let [{:go go#} (require ,lib-name)]
+       (go# #(do ,...))))
+
+  (fn go-loop [binding-vec ...]
+    "Asyncrhonous loop macro.
+
+Similar to `let`, but binds a special `recur` call that will reassign
+the values of the `bindings` and restart the loop `body` when called
+in tail position.  Unlike `let`, doesn't support multiple-value
+destructuring specifically."
+    {:fnl/arglist [binding-vec body*]}
+    (let [recur (sym :recur)
+          keys []
+          gensyms []
+          bindings []]
+      (each [i v (ipairs binding-vec)]
+        (when (= 0 (% i 2))
+          (let [key (. binding-vec (- i 1))
+                gs (gensym (tostring i))]
+            (assert-compile (not (list? key)) "loop macro doesn't support multiple-value destructuring" key)
+            ;; [sym1# sym2# etc...], for the function application below
+            (table.insert gensyms gs)
+
+            ;; let bindings
+            (table.insert bindings gs)  ;; sym1#
+            (table.insert bindings v)   ;; (expression)
+            (table.insert bindings key) ;; [first & rest]
+            (table.insert bindings gs)  ;; sym1#
+
+            ;; The gensyms we use for function application
+            (table.insert keys key))))
+      `(go (let ,bindings
+             ((fn ,recur ,keys
+                ,...)
+              ,(unpack gensyms))))))
+
+  ;; TODO alt!
+  (tset macro-loaded lib-name {: go-loop : go}))
+
+(require-macros ...)
 
 (defprotocol Handler
   (active? [h] "returns true if has callback. Must work w/o lock")
@@ -589,7 +651,7 @@ whole second value."
                         s* (math.ceil s)]
                     (when (and (not (= s* s)) (not warned))
                       (set warned true)
-                      (: (timeout 10000) :take! #(set warned false))
+                      (: (timeout 10000) :take! (fn-handler #(set warned false)))
                       (io.stderr:write
                        (.. "WARNING Lua doesn't support sub-second time precision.  "
                            "Timeout rounded to the next nearest whole second.  "
@@ -700,21 +762,6 @@ completed"
       (do (c:err-handler msg)
           (close! c)))
     c))
-
-(macro go [...]
-  "Private helper, see `async-macros.fnl` for public macro."
-  `(go* (fn [] ,...)))
-
-(macro go-loop [bindings ...]
-  "Private helper, see `async-macros.fnl` for public macro.
-Doesn't have support for sequential binding!"
-  (let [syms (fcollect [i 1 (length bindings) 2] (. bindings i))
-        vals (fcollect [i 2 (length bindings) 2] (. bindings i))
-        recur (sym :recur)]
-    (if (next vals)
-        `(go* #((fn ,recur ,syms ,...)
-                ,(unpack vals)))
-        `(go* (fn ,recur [] ,...)))))
 
 (fn random-array [n]
   {:private true}
@@ -982,12 +1029,12 @@ closing when exhausted."
 ;;; Mult, Mix, Pub
 
 (defprotocol Mux
-  (muxch [_]))
+  (muxch* [_]))
 
 (defprotocol Mult
-  (tap [_ ch close?])
-  (untap [_ ch])
-  (untap-all [_]))
+  (tap* [_ ch close?])
+  (untap* [_ ch])
+  (untap-all* [_]))
 
 (fn mult [ch]
   "Creates and returns a mult(iple) of the supplied channel
@@ -1005,12 +1052,12 @@ If a tap puts to a closed channel, it will be removed from the mult."
   (let [atom {:cs {}}
         m (reify
            Mux
-           (muxch [_] ch)
+           (muxch* [_] ch)
 
            Mult
-           (tap [_ ch close?] (tset atom :cs ch close?) nil)
-           (untap [_ ch] (tset atom :cs ch nil) nil)
-           (untap-all [_] (tset atom :cs {}) nil))
+           (tap* [_ ch close?] (tset atom :cs ch close?) nil)
+           (untap* [_ ch] (tset atom :cs ch nil) nil)
+           (untap-all* [_] (tset atom :cs {}) nil))
         dchan (chan 1)
         done (fn [_]
                (set dctr (- dctr 1))
@@ -1025,7 +1072,7 @@ If a tap puts to a closed channel, it will be removed from the mult."
               (set dctr (length chs))
               (each [_ c (ipairs chs)]
                 (when (not (put! c val done))
-                  (m:untap c)))
+                  (untap* m c)))
               ;;wait for all
               (when (next chs)
                 (<! dchan))
@@ -1038,22 +1085,22 @@ By default the channel will be closed when the source closes, but can
 be determined by the `close?` parameter."
   {:fnl/arglist [mult ch close?]}
   (let [close? (if (= (select :# ...) 0) true ...)]
-    (mult:tap ch close?) ch))
+    (tap* mult ch close?) ch))
 
 (fn untap [mult ch]
   "Disconnects a target channel `ch` from a `mult`."
-  (mult:untap ch))
+  (untap* mult ch))
 
 (fn untap-all [mult]
   "Disconnects all target channels from a `mult`."
-  (mult:untap-all))
+  (untap-all* mult))
 
 (defprotocol Mix
-  (admix [_ ch])
-  (unmix [_ ch])
-  (unmix-all [_])
-  (toggle [_ state-map])
-  (solo-mode [_ mode]))
+  (admix* [_ ch])
+  (unmix* [_ ch])
+  (unmix-all* [_])
+  (toggle* [_ state-map])
+  (solo-mode* [_ mode]))
 
 (fn mix [out]
   "Creates and returns a mix of one or more input channels which will
@@ -1098,15 +1145,15 @@ Each channel can have zero or more boolean modes set via 'toggle':
                                  (table.insert change))}))
         m (reify
            Mux
-           (muxch [_] out)
+           (muxch* [_] out)
            Mix
-           (admix [_ ch] (tset atom.cs ch {}) (changed))
-           (unmix [_ ch] (tset atom.cs ch nil) (changed))
-           (unmix-all [_] (set atom.cs {}) (changed))
-           (toggle [_ state-map]
+           (admix* [_ ch] (tset atom.cs ch {}) (changed))
+           (unmix* [_ ch] (tset atom.cs ch nil) (changed))
+           (unmix-all* [_] (set atom.cs {}) (changed))
+           (toggle* [_ state-map]
                    (set atom.cs (merge-with merge* atom.cs state-map))
                    (changed))
-           (solo-mode [_ mode]
+           (solo-mode* [_ mode]
                       (when (not (. solo-modes mode))
                         (assert false (.. "mode must be one of: "
                                           (table.concat (icollect [k (pairs solo-modes)] k) ", "))))
@@ -1127,15 +1174,15 @@ Each channel can have zero or more boolean modes set via 'toggle':
 
 (fn admix [mix ch]
   "Adds `ch` as an input to the `mix`."
-  (mix:admix ch))
+  (admix* mix ch))
 
 (fn unmix [mix ch]
   "Removes `ch` as an input to the `mix`."
-  (mix:unmix ch))
+  (unmix* mix ch))
 
 (fn unmix-all [mix]
   "Removes all inputs from the `mix`."
-  (mix:unmix-all))
+  (unmix-all* mix))
 
 (fn toggle [mix state-map]
   "Atomically sets the state(s) of one or more channels in a `mix`.  The
@@ -1146,17 +1193,17 @@ with the current state.
 
 Note that channels can be added to a `mix` via `toggle', which can be
 used to add channels in a particular (e.g. paused) state."
-  (mix:toggle state-map))
+  (toggle* mix state-map))
 
 (fn solo-mode [mix mode]
   "Sets the solo mode of the `mix`.  `mode` must be one of `:mute` or
 `:pause`."
-  (mix:solo-mode mode))
+  (solo-mode* mix mode))
 
 (defprotocol Pub
-  (sub [_ v ch close?])
-  (unsub [_ v ch])
-  (unsub-all [_ v]))
+  (sub* [_ v ch close?])
+  (unsub* [_ v ch])
+  (unsub-all* [_ v]))
 
 (fn pub [ch topic-fn buf-fn]
   "Creates and returns a pub(lication) of the supplied channel `ch`,
@@ -1186,16 +1233,16 @@ the source."
                               m)))
         p (reify
            Mux
-           (muxch [_] ch)
+           (muxch* [_] ch)
 
            Pub
-           (sub [_ topic ch close?]
+           (sub* [_ topic ch close?]
                 (let [m (ensure-mult topic)]
-                  (m:tap ch close?)))
-           (unsub [_ topic ch]
+                  (tap* m ch close?)))
+           (unsub* [_ topic ch]
                   (case (. atom :mults topic)
-                    m (m:untap ch)))
-           (unsub-all [_ topic]
+                    m (untap* m ch)))
+           (unsub-all* [_ topic]
                       (if topic
                           (tset atom :mults topic nil)
                           (tset atom :mults {}))))]
@@ -1203,10 +1250,10 @@ the source."
       (let [val (<! ch)]
         (if (= nil val)
             (each [_ m (pairs atom.mults)]
-              (close! (m:muxch)))
+              (close! (muxch* m)))
             (let [topic (topic-fn val)]
               (case (. atom :mults topic)
-                m (when (not (>! (m:muxch) val))
+                m (when (not (>! (muxch* m) val))
                     (tset atom :mults topic nil)))
               (recur)))))
     p))
@@ -1217,15 +1264,15 @@ By default the channel will be closed when the source closes, but can
 be determined by the `close?` parameter."
   {:fnl/arglist [pub topic ch close?]}
   (let [close? (if (= (select :# ...) 0) true ...)]
-    (pub:sub topic ch close?)))
+    (sub* pub topic ch close?)))
 
 (fn unsub [pub topic ch]
   "Unsubscribes a channel `ch` from a `topic` of a `pub`."
-  (pub:unsub topic ch))
+  (unsub* pub topic ch))
 
 (fn unsub-all [pub topic]
   "Unsubscribes all channels from a `pub`, or a `topic` of a `pub`."
-  (pub:unsub-all topic))
+  (unsub-all* pub topic))
 
 ;;;
 

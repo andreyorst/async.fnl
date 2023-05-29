@@ -1,4 +1,5 @@
-(require-macros :fennel-test)
+(require-macros (doto :fennel-test require))
+
 (local {: <! : >! : <!! : >!! : chan : close! : to-chan! : go
         : pipeline-async : pipeline : put! : timeout : alts! : into}
   (require :src.async))

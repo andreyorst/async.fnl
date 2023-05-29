@@ -11,6 +11,21 @@ COMMITS is an ever-increasing counter of commits since the beginning of this rep
 
 Copy [async.fnl](https://gitlab.com/andreyorst/async.fnl/-/raw/main/src/async.fnl) somewhere into your project.
 
+### Usage
+
+After installing, the library can be required as usual:
+
+```fennel
+(local async (require :async))
+```
+
+To use macros, the library has to be loaded in a special way:
+
+```fennel
+(import-macros async-macros
+  (doto :async require))
+```
+
 ## Differences from `core.async`
 
 The Lua runtime doesn't require using inversion of control and complex code transformations to have the ability to pause funtion execution at any given moment.
@@ -28,12 +43,6 @@ Please report bugs or inconsistencies to the project [issue tracker](https://git
 ## Documentation
 
 The documentation is auto-generated with [Fenneldoc](https://gitlab.com/andreyorst/fenneldoc) and can be found [here](https://gitlab.com/andreyorst/async.fnl/-/blob/main/doc/src/async.md).
-
-## Running tests
-
-Run the following command at the root of the repository:
-
-    fennel-test/runner tests/*.fnl
 
 ## Contributing
 

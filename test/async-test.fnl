@@ -1,11 +1,13 @@
-(require-macros :fennel-test)
-(local {: <! : >! : <!! : chan : close! : to-chan! :go go* : promise-chan
-        : pipeline-async : pipeline : pipe : take! : put! : timeout : alts! : into : offer! : poll!
-        &as async}
+(require-macros (doto :fennel-test require))
+
+(local {: <! : >! : <!! : chan : close! : to-chan! : promise-chan
+        : pipeline-async : pipeline : pipe : take! : put! : timeout
+        : alts! : into : offer! : poll! &as async}
   (require :src.async))
 
-(macro go [...]
-  `(,(sym :go*) #(do ,...)))
+(import-macros
+ {: go : go-loop}
+ (doto :src.async require))
 
 (fn take!! [c tout val]
   (<!! (go (let [t (timeout (or tout 300))]
@@ -218,13 +220,13 @@
   "Returns a channel upon which will be placed integers from `0` to
 `n` (exclusive) at 10 ms intervals, using the provided `xform`."
   (let [c (chan 1 xform)]
-    (go* #((fn loop [i]
-             (if (< i n)
-                 (do
-                   (<! (timeout 10))
-                   (>! c i)
-                   (loop (+ 1 i)))
-                 (close! c))) 0))
+    (go-loop [i 0]
+      (if (< i n)
+          (do
+            (<! (timeout 10))
+            (>! c i)
+            (recur (+ 1 i)))
+          (close! c)))
     c))
 
 (fn map [f]

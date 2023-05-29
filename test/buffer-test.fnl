@@ -1,4 +1,5 @@
-(require-macros :fennel-test)
+(require-macros (doto :fennel-test require))
+
 (local {: buffer
         : dropping-buffer
         : sliding-buffer
