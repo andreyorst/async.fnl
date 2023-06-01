@@ -8,7 +8,7 @@ this license.
 You must not remove this notice, or any other, from this software.")
 
 (local lib-name
-  (or ... "async"))
+  (or ... :async))
 
 ;;; Helpers
 
@@ -22,8 +22,14 @@ You must not remove this notice, or any other, from this software.")
               :__index {:unbox (fn [[x]] x)}
               :__name :reduced
               :__tostring (fn [[x]] (.. "reduced: " (tostring x)))}]
-         (fn reduced [value] (setmetatable [value] Reduced))
-         (fn reduced? [value] (rawequal (getmetatable value) Reduced))
+         (fn reduced [value]
+           "Wrap `value` as an instance of the Reduced object.
+Reduced will terminate the `reduce` function, if it supports this kind
+of termination."
+           (setmetatable [value] Reduced))
+         (fn reduced? [value]
+           "Check if `value` is an instance of Reduced."
+           (rawequal (getmetatable value) Reduced))
          {:is_reduced reduced? : reduced :reduced? reduced?})))
 
 (local {: reduced : reduced?}
@@ -133,7 +139,7 @@ are present merge is done by calling `f` with both values."
 
 (eval-compiler
   (local lib-name
-    (or ... "async"))
+    (or ... :async))
 
   (fn go [...]
     "Asynchronously executes the `body`, returning immediately to the
@@ -183,7 +189,7 @@ destructuring specifically."
   ;; TODO alt!
   (tset macro-loaded lib-name {: go-loop : go}))
 
-(require-macros ...)
+(require-macros (or ... :async))
 
 (defprotocol Handler
   (active? [h] "returns true if has callback. Must work w/o lock")
@@ -224,10 +230,10 @@ destructuring specifically."
 ;;; Buffers
 
 (defprotocol Buffer
-  (full? [b] "returns true if buffer cannot accept put")
-  (remove! [b] "remove and return next item from buffer, called under chan mutex")
-  (add! [b itm] "if room, add item to the buffer, returns b, called under chan mutex")
-  (close-buf! [b] "called on chan closed under chan mutex, return ignored"))
+  (full? [buffer] "Returns `true` if `buffer` cannot accept a put.")
+  (remove! [buffer] "Remove and return next item from the `buffer`, called under chan mutex.")
+  (add! [buffer item] "If room, add `item` to the `buffer`, returns `buffer`, called under chan mutex.")
+  (close-buf! [buffer] "called on `buffer` closed under chan mutex, return ignored."))
 
 (local FixedBuffer
   {:type Buffer
@@ -246,7 +252,7 @@ destructuring specifically."
               "Take value from the `buffer`."
               (when (> (length buffer) 0)
                 (table.remove buffer 1)))
-   :close-buf! (fn [b])})
+   :close-buf! (fn [_] "noop" nil)})
 
 (local DroppingBuffer
   {:type Buffer
@@ -268,11 +274,10 @@ otherwise drop the value."
               "Take value from the `buffer`."
               (when (> (length buffer) 0)
                 (table.remove buffer 1)))
-   :close-buf! (fn [b])})
+   :close-buf! (fn [_] "noop" nil)})
 
 (local SlidingBuffer
   {:type Buffer
-   :closed false
    :full? (fn []
             "Check if buffer is full.
 Always returns `false`."
@@ -292,29 +297,39 @@ otherwise drop the oldest value."
               "Take value from the `buffer`."
               (when (> (length buffer) 0)
                 (table.remove buffer 1)))
-   :close-buf! (fn [b])})
+   :close-buf! (fn [_] "noop" nil)})
+
+(local no-val {})
+
+(fn undelivered? [x]
+  (rawequal x no-val))
 
 (local PromiseBuffer
   {:type Buffer
+   :val no-val
    :full? (fn []
             "Check if buffer is full.
 Always returns `false`."
             false)
-   :length (fn [{:buf buffer}]
+   :length (fn [this]
              "Return item count in the `buffer`."
-             (length buffer))
-   :add! (fn [{:buf buffer &as this} val]
+             (if (undelivered? this.val) 0 1))
+   :add! (fn [this val]
            "Put `val` into the `buffer` if there isnt one already,
 otherwise drop the value."
            (assert (not= val nil) "value must not be nil")
-           (when (= 0 (length buffer))
-             (tset buffer 1 val))
+           (when (undelivered? this.val)
+             (tset this :val val))
            this)
-   :remove! (fn [{:buf [val]}]
-              "Take value from the buffer.
+   :remove! (fn [{:val value}]
+              "Take `value` from the buffer.
 Doesn't remove the `val` from the buffer."
-              val)
-   :close-buf! (fn [b])})
+              value)
+   :close-buf! (fn [{:val value &as this}]
+                 "Close the promise buffer by setting its `value` to `nil` if it wasn't
+delivered earlier."
+                 (when (undelivered? value)
+                   (tset this :val nil)))})
 
 (fn buffer* [size buffer-type]
   {:private true}

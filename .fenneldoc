@@ -11,7 +11,7 @@
 
 {:fennel-path {}
  :function-signatures true
- :ignored-args-patterns ["%.%.%." "%_"]
+ :ignored-args-patterns ["%.%.%." "%_" "as" "this"]
  :inline-references "link"
  :insert-comment true
  :insert-copyright true

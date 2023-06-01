@@ -1,4 +1,4 @@
-# Async.fnl (1.6.10)
+# Async.fnl (1.6.12)
 A Fennel library providing facilities for async programming and communication.
 
 **Table of contents**
@@ -65,7 +65,6 @@ A Fennel library providing facilities for async programming and communication.
 - [`PromiseBuffer.remove!`](#promisebufferremove)
 - [`SlidingBuffer.add!`](#slidingbufferadd)
 - [`SlidingBuffer.close-buf!`](#slidingbufferclose-buf)
-- [`SlidingBuffer.closed`](#slidingbufferclosed)
 - [`SlidingBuffer.full?`](#slidingbufferfull)
 - [`SlidingBuffer.length`](#slidingbufferlength)
 - [`SlidingBuffer.remove!`](#slidingbufferremove)
@@ -675,10 +674,10 @@ otherwise drop the value.
 Function signature:
 
 ```
-(DroppingBuffer.close-buf! b)
+(DroppingBuffer.close-buf! _)
 ```
 
-**Undocumented**
+noop
 
 ## `DroppingBuffer.full?`
 Function signature:
@@ -721,10 +720,10 @@ Add `val` into the `buffer`.
 Function signature:
 
 ```
-(FixedBuffer.close-buf! b)
+(FixedBuffer.close-buf! _)
 ```
 
-**Undocumented**
+noop
 
 ## `FixedBuffer.full?`
 Function signature:
@@ -757,7 +756,7 @@ Take value from the `buffer`.
 Function signature:
 
 ```
-(PromiseBuffer.add! {:buf buffer &as this} val)
+(PromiseBuffer.add! this val)
 ```
 
 Put `val` into the `buffer` if there isnt one already,
@@ -767,10 +766,11 @@ otherwise drop the value.
 Function signature:
 
 ```
-(PromiseBuffer.close-buf! b)
+(PromiseBuffer.close-buf! {:val value &as this})
 ```
 
-**Undocumented**
+Close the promise buffer by setting its `value` to `nil` if it wasn't
+delivered earlier.
 
 ## `PromiseBuffer.full?`
 Function signature:
@@ -786,7 +786,7 @@ Always returns `false`.
 Function signature:
 
 ```
-(PromiseBuffer.length {:buf buffer})
+(PromiseBuffer.length this)
 ```
 
 Return item count in the `buffer`.
@@ -795,10 +795,10 @@ Return item count in the `buffer`.
 Function signature:
 
 ```
-(PromiseBuffer.remove! {:buf [val]})
+(PromiseBuffer.remove! {:val value})
 ```
 
-Take value from the buffer.
+Take `value` from the buffer.
 Doesn't remove the `val` from the buffer.
 
 ## `SlidingBuffer.add!`
@@ -815,13 +815,10 @@ otherwise drop the oldest value.
 Function signature:
 
 ```
-(SlidingBuffer.close-buf! b)
+(SlidingBuffer.close-buf! _)
 ```
 
-**Undocumented**
-
-## `SlidingBuffer.closed`
-**Undocumented**
+noop
 
 ## `SlidingBuffer.full?`
 Function signature:
@@ -852,22 +849,60 @@ Function signature:
 Take value from the `buffer`.
 
 ## `reduced`
-**Undocumented**
+Function signature:
+
+```
+(reduced value)
+```
+
+Wrap `value` as an instance of the Reduced object.
+Reduced will terminate the `reduce` function, if it supports this kind
+of termination.
 
 ## `reduced?`
-**Undocumented**
+Function signature:
+
+```
+(reduced? value)
+```
+
+Check if `value` is an instance of Reduced.
 
 ## `type.add!`
-**Undocumented**
+Function signature:
+
+```
+(type.add! buffer item)
+```
+
+If room, add `item` to the `buffer`, returns `buffer`, called under chan mutex.
 
 ## `type.close-buf!`
-**Undocumented**
+Function signature:
+
+```
+(type.close-buf! buffer)
+```
+
+called on `buffer` closed under chan mutex, return ignored.
 
 ## `type.full?`
-**Undocumented**
+Function signature:
+
+```
+(type.full? buffer)
+```
+
+Returns `true` if `buffer` cannot accept a put.
 
 ## `type.remove!`
-**Undocumented**
+Function signature:
+
+```
+(type.remove! buffer)
+```
+
+Remove and return next item from the `buffer`, called under chan mutex.
 
 
 ---
