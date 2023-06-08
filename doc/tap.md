@@ -5,11 +5,11 @@ Here's how Clojure's `tap>` can be implemented with channels:
 ```fennel
 ;; tap.fnl
 (local {: chan : mult : tap : untap
-        : close! : <! : offer}
+        : close! : <! : offer!}
   (require :src.async))
 
 (import-macros
- {: go-loop}
+ {: go : go-loop}
  (doto :src.async require))
 
 (local tap-ch (chan))
