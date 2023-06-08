@@ -52,19 +52,23 @@ of termination."
     (_ true) true
     _ false))
 
-(fn register-hook [f]
-  "Run function `f` on each function return and every 1000 instructions.
-Appends the hook to existing one, if found, unless the hook is `f`."
+(var last-hook nil)
+
+(fn register-debug-hook [f]
+  "Run function `f` every 1000 instructions.
+`f` must check that it is called with the `event` set to the string
+`\"count\"`.  Appends the hook to existing one, if found, unless the
+hook is the same as the last time this function was called."
   {:private true}
   (when (and gethook sethook)
     (match (gethook)
-      f nil
-      nil (sethook f :r 1000)
-      (hook mask count)
-      (sethook
-       (fn [...] (hook ...) (f ...))
-       mask
-       count))))
+      (where last-hook (not= last-hook nil)) nil
+      nil (do (set last-hook f)
+              (sethook f "" 1000))
+      (hook ?mask)
+      (let [f (fn [...] (hook ...) (f ...))]
+        (set last-hook f)
+        (sethook f ?mask 1000)))))
 
 (macro defprotocol [name ...]
   `(local ,(faccumulate [names {'&as name} i 1 (select :# ...)]
@@ -384,44 +388,39 @@ to say, puts into this buffer will never cause the buffer to be full."
 
 ;;; Channels
 
+(var running? false)
 (local timeouts {})
 (local dispatched-tasks {})
 
-(fn advance-tasks []
+(fn process-messages [event]
   "Close any timeout channels whose closing time is less than or equal
 to current time.  Also calls any callbacks that were dispatched."
   {:private true}
-  (var done false)
-  (for [i 1 1024 :until done]
-    (case (next dispatched-tasks)
-      f (do (tset dispatched-tasks f nil)
-            (pcall f))
-      nil (set done true)))
-  (each [t ch (pairs timeouts)]
-    (when (>= 0 (difftime t (time)))
-      (ch:close)
-      (tset timeouts t nil))))
-
-(macro box [val]
-  `[,val])
-
-(macro unbox [b]
-  `(. ,b 1))
+  (when (and (not running?) (= event :count))
+    (set running? true)
+    (var done false)
+    (for [i 1 1024 :until done]
+      (case (next dispatched-tasks)
+        f (do (tset dispatched-tasks f nil)
+              (pcall f))
+        nil (set done true)))
+    (each [t ch (pairs timeouts)]
+      (when (>= 0 (difftime t (time)))
+        (ch:close)
+        (tset timeouts t nil)))
+    (set running? false)))
 
 (fn dispatch [f]
-  (if (and gethook sethook)
+  (if (and last-hook gethook sethook)
       (tset dispatched-tasks f true)
       (f))
   nil)
 
-(macro PutBox [handler val]
-  `[,handler ,val])
-
-(macro -handler [pb]
-  `(. ,pb 1))
-
-(macro -val [pb]
-  `(. ,pb 2))
+(macro box [val] `[,val])
+(macro unbox [b] `(. ,b 1))
+(macro PutBox [handler val] `[,handler ,val])
+(macro -handler [pb] `(. ,pb 1))
+(macro -val [pb] `(. ,pb 2))
 
 (fn put-active? [[handler]]
   (handler:active?))
@@ -1364,7 +1363,7 @@ default, unless `buf-or-n` is given."
         (close! out))
     out))
 
-(register-hook advance-tasks)
+(register-debug-hook process-messages)
 
 {: buffer
  : dropping-buffer
